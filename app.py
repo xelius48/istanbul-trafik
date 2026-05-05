@@ -237,21 +237,27 @@ with col1:
 
     m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
 
-    # Güzergah çizgileri
+# Güzergah çizgileri — OSRM ile gerçek yollar
+    import requests as req
+    def gercek_rota(lat1, lon1, lat2, lon2):
+        try:
+            url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
+            r = req.get(url, timeout=5)
+            coords = r.json()["routes"][0]["geometry"]["coordinates"]
+            return [[c[1], c[0]] for c in coords]
+        except:
+            return [[lat1, lon1], [lat2, lon2]]
+
     for _, g in guzergahlar.iterrows():
         sirket_adi = str(g["sirket"])
         if sirket_adi in sirketler["isim"].values:
             s_row = sirketler[sirketler["isim"] == sirket_adi].iloc[0]
+            koordinatlar = gercek_rota(
+                float(g["baslangic_lat"]), float(g["baslangic_lon"]),
+                float(s_row["lat"]),        float(s_row["lon"])
+            )
             folium.PolyLine(
-                locations=[
-                    [float(g["baslangic_lat"]), float(g["baslangic_lon"])],
-                    [float(s_row["lat"]),        float(s_row["lon"])]
-                ],
-                color=sirket_renk.get(sirket_adi, "gray"),
-                weight=1.5,
-                opacity=0.4,
-                tooltip=f"{sirket_adi} | {str(g['baslangic_ilce'])} ({int(g['calisan_sayisi'])} kişi)"
-            ).add_to(m)
+                locations=koordinatlar,
 
     # İlçe noktaları
     ilce_grp = guzergahlar.groupby("baslangic_ilce").agg(
