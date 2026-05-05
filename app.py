@@ -245,7 +245,7 @@ with col1:
         yeni = yeni_mesai.get(s["isim"], eski)
         degisti = eski != yeni
         folium.CircleMarker(
-            [s["lat"], s["lon"]], radius=12,
+            [float(s["lat"]), float(s["lon"])], radius=12,
             color=sirket_renk[s["isim"]], fill=True, fill_opacity=0.9,
             popup=folium.Popup(
                 f"<b>{s['isim']}</b><br>"
@@ -262,7 +262,7 @@ with col1:
         lon = ilce_guz["baslangic_lon"].iloc[0]
         toplam = ilce_guz["calisan_sayisi"].sum()
         folium.CircleMarker(
-            [lat, lon], radius=5 + min(toplam//20, 8),
+            [float(lat), float(lon)], radius=5 + min(toplam//20, 8),
             color="gray", fill=True, fill_opacity=0.5,
             popup=f"{ilce}\n{toplam} çalışan"
         ).add_to(m)
@@ -276,7 +276,7 @@ with col1:
                  [float(sirket_row["lat"]), float(sirket_row["lon"])]],
                 color=sirket_renk.get(g["sirket"], "gray"),
                 weight=1.5, opacity=0.4,
-                tooltip=f"{g['sirket']} | {g['baslangic_ilce']} → {int(g['calisan_sayisi'])} çalışan"
+                tooltip=f"{g['sirket']} | {g['baslangic_ilce']} → {int(float(g['calisan_sayisi']))} çalışan"
             ).add_to(m)
 
     legend = """<div style="position:fixed;bottom:20px;left:20px;background:white;
