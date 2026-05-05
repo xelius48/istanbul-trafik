@@ -239,6 +239,7 @@ with col1:
 
     # Güzergah çizgileri — OSRM ile gerçek yollar
     import requests as req
+    @st.cache_data(show_spinner=False)
     def gercek_rota(lat1, lon1, lat2, lon2):
         try:
             url = (f"http://router.project-osrm.org/route/v1/driving/"
