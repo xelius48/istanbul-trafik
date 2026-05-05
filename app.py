@@ -237,7 +237,7 @@ with col1:
 
     m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
 
-# Güzergah çizgileri — OSRM ile gerçek yollar
+    # Güzergah çizgileri — OSRM ile gerçek yollar
     import requests as req
     def gercek_rota(lat1, lon1, lat2, lon2):
         try:
