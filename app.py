@@ -241,7 +241,8 @@ with col1:
     import requests as req
     def gercek_rota(lat1, lon1, lat2, lon2):
         try:
-            url = f"http://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
+            url = (f"http://router.project-osrm.org/route/v1/driving/"
+                   f"{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson")
             r = req.get(url, timeout=5)
             coords = r.json()["routes"][0]["geometry"]["coordinates"]
             return [[c[1], c[0]] for c in coords]
@@ -254,10 +255,15 @@ with col1:
             s_row = sirketler[sirketler["isim"] == sirket_adi].iloc[0]
             koordinatlar = gercek_rota(
                 float(g["baslangic_lat"]), float(g["baslangic_lon"]),
-                float(s_row["lat"]),        float(s_row["lon"])
+                float(s_row["lat"]),       float(s_row["lon"])
             )
             folium.PolyLine(
                 locations=koordinatlar,
+                color=sirket_renk.get(sirket_adi, "gray"),
+                weight=2,
+                opacity=0.5,
+                tooltip=f"{sirket_adi} | {str(g['baslangic_ilce'])} ({int(g['calisan_sayisi'])} kişi)"
+            ).add_to(m)
 
     # İlçe noktaları
     ilce_grp = guzergahlar.groupby("baslangic_ilce").agg(
@@ -333,12 +339,8 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     yuk_y = {s: 0 for s in mesai_secenekleri}
     for _, g in guzergah_s.iterrows():
         s = str(g["sirket"])
-        e_saat = mesai_dict.get(s, "08:00")
-        y_saat = yeni_mesai.get(s, e_saat)
-        if e_saat in yuk_e:
-            yuk_e[e_saat] += int(g["calisan_sayisi"])
-        if y_saat in yuk_y:
-            yuk_y[y_saat] += int(g["calisan_sayisi"])
+        yuk_e[mesai_dict.get(s, "08:00")]  += int(g["calisan_sayisi"])
+        yuk_y[yeni_mesai.get(s, mesai_dict.get(s, "08:00"))] += int(g["calisan_sayisi"])
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4))
     xp = list(range(len(mesai_secenekleri)))
