@@ -272,8 +272,8 @@ with col1:
         if g["sirket"] in sirketler["isim"].values:
             sirket_row = sirketler[sirketler["isim"] == g["sirket"]].iloc[0]
             folium.PolyLine(
-                [[g["baslangic_lat"], g["baslangic_lon"]],
-                 [sirket_row["lat"], sirket_row["lon"]]],
+                [[float(g["baslangic_lat"]), float(g["baslangic_lon"])],
+                 [float(sirket_row["lat"]), float(sirket_row["lon"])]],
                 color=sirket_renk.get(g["sirket"], "gray"),
                 weight=1.5, opacity=0.4,
                 tooltip=f"{g['sirket']} | {g['baslangic_ilce']} → {int(g['calisan_sayisi'])} çalışan"
