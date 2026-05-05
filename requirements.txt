@@ -1,0 +1,10 @@
+osmnx
+networkx
+folium
+pulp
+pandas
+numpy
+matplotlib
+streamlit
+streamlit-folium
+openpyxl
