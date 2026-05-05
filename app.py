@@ -12,9 +12,17 @@ st.set_page_config(page_title="İstanbul Trafik Optimizasyonu", layout="wide")
 st.title("🚦 İstanbul Trafik Optimizasyonu")
 st.markdown("Şirket servis güzergahlarını optimize ederek tepe saatteki trafik yükünü azalt.")
 
-# ── SABİT ──
 mesai_secenekleri = ["07:00","07:30","08:00","08:30","09:00","09:30","10:00"]
 mesai_indeks = {s: i for i, s in enumerate(mesai_secenekleri)}
+
+def to_float(v):
+    return float(v)
+
+def to_int(v):
+    return int(v)
+
+def to_str(v):
+    return str(v)
 
 VARSAYILAN_SIRKETLER = pd.DataFrame([
     {"isim": "TechPark A.Ş.",   "lat": 41.0500, "lon": 29.0200, "mevcut_mesai": "08:00", "sabit": False},
@@ -78,133 +86,128 @@ VARSAYILAN_GUZERGAHLAR = pd.DataFrame([
     ("İnşaat Grubu",     "Şişli",         41.0602, 28.9877, 20),
 ], columns=["sirket","baslangic_ilce","baslangic_lat","baslangic_lon","calisan_sayisi"])
 
+def df_temizle_sirket(df):
+    d = df.copy()
+    d["lat"] = d["lat"].astype(float)
+    d["lon"] = d["lon"].astype(float)
+    d["isim"] = d["isim"].astype(str)
+    d["mevcut_mesai"] = d["mevcut_mesai"].astype(str)
+    d["sabit"] = d["sabit"].astype(bool)
+    return d
+
+def df_temizle_guzergah(df):
+    d = df.copy()
+    d["sirket"] = d["sirket"].astype(str)
+    d["baslangic_ilce"] = d["baslangic_ilce"].astype(str)
+    d["baslangic_lat"] = d["baslangic_lat"].astype(float)
+    d["baslangic_lon"] = d["baslangic_lon"].astype(float)
+    d["calisan_sayisi"] = d["calisan_sayisi"].astype(int)
+    return d
+
 # ── SIDEBAR ──
 st.sidebar.header("⚙️ Ayarlar")
 st.sidebar.subheader("📂 Excel Veri Yükle")
-
 yuklenen = st.sidebar.file_uploader("Excel dosyası (.xlsx)", type=["xlsx"])
 
-sirketler   = VARSAYILAN_SIRKETLER.copy()
-guzergahlar = VARSAYILAN_GUZERGAHLAR.copy()
+sirketler   = df_temizle_sirket(VARSAYILAN_SIRKETLER)
+guzergahlar = df_temizle_guzergah(VARSAYILAN_GUZERGAHLAR)
 
 if yuklenen:
     try:
         xl = pd.ExcelFile(yuklenen)
-        
         if "sirketler" in xl.sheet_names and "guzergahlar" in xl.sheet_names:
-            sirketler   = xl.parse("sirketler")
-            guzergahlar = xl.parse("guzergahlar")
-            
-            # Sabit sütunu boolean'a çevir
-            if "sabit" in sirketler.columns:
-                sirketler["sabit"] = sirketler["sabit"].astype(bool)
-            else:
-                sirketler["sabit"] = False
-
+            sirketler   = df_temizle_sirket(xl.parse("sirketler"))
+            guzergahlar = df_temizle_guzergah(xl.parse("guzergahlar"))
             st.sidebar.success(f"✅ {len(sirketler)} şirket, {len(guzergahlar)} güzergah yüklendi!")
         else:
-            st.sidebar.error("❌ Excel'de 'sirketler' ve 'guzergahlar' sayfaları olmalı!")
+            st.sidebar.error("❌ 'sirketler' ve 'guzergahlar' sayfaları gerekli!")
     except Exception as e:
         st.sidebar.error(f"Hata: {e}")
 else:
-    st.sidebar.info("Excel yüklenmedi — varsayılan veri kullanılıyor.")
+    st.sidebar.info("Varsayılan 15 şirket kullanılıyor.")
 
-# Örnek Excel indirme
-with st.sidebar.expander("📋 Excel formatı nasıl olmalı?"):
+with st.sidebar.expander("📋 Excel formatı"):
     st.markdown("""
-**2 sayfa gerekli:**
+**sirketler sayfası:** isim, lat, lon, mevcut_mesai, sabit
 
-**sirketler sayfası:**
-- `isim` — şirket adı
-- `lat` — enlem (örn: 41.05)
-- `lon` — boylam (örn: 29.02)
-- `mevcut_mesai` — örn: 08:00
-- `sabit` — TRUE/FALSE
-
-**guzergahlar sayfası:**
-- `sirket` — şirket adı (sirketler ile aynı)
-- `baslangic_ilce` — ilçe adı
-- `baslangic_lat` — ilçe enlemi
-- `baslangic_lon` — ilçe boylamı
-- `calisan_sayisi` — o ilçeden gelen çalışan
+**guzergahlar sayfası:** sirket, baslangic_ilce, baslangic_lat, baslangic_lon, calisan_sayisi
     """)
 
-max_sapma = st.sidebar.slider("Max mesai kayması", 1, 4, 2, help="1 = 30 dakika")
-min_tepe  = st.sidebar.slider("Tepe saatte min. şirket oranı (%)", 5, 40, 15) / 100
+max_sapma = st.sidebar.slider("Max mesai kayması (adım)", 1, 4, 2, help="1 adım = 30 dk")
+min_tepe  = st.sidebar.slider("Tepe saatte min. oran (%)", 5, 40, 15) / 100
 
-# ── ÇAKIŞMA HESABI ──
+# ── FONKSİYONLAR ──
 def cakisma_hesapla(sirketler_df, guzergah_df, mesai_dict):
     ilce_saat = defaultdict(lambda: defaultdict(int))
     for _, g in guzergah_df.iterrows():
-        saat = mesai_dict.get(g["sirket"], "08:00")
-        ilce_saat[g["baslangic_ilce"]][saat] += int(g["calisan_sayisi"])
-    
-    toplam = 0
-    detay  = []
+        saat = mesai_dict.get(str(g["sirket"]), "08:00")
+        ilce_saat[str(g["baslangic_ilce"])][saat] += int(g["calisan_sayisi"])
+    toplam, detay = 0, []
     for ilce, saatler in ilce_saat.items():
         for saat, yuk in saatler.items():
             if yuk > 20:
                 toplam += yuk
                 detay.append({"İlçe": ilce, "Saat": saat, "Yük": yuk})
-    
-    return toplam, pd.DataFrame(detay).sort_values("Yük", ascending=False) if detay else pd.DataFrame()
+    detay_df = pd.DataFrame(detay).sort_values("Yük", ascending=False) if detay else pd.DataFrame()
+    return toplam, detay_df
 
-# ── OPTİMİZASYON ──
 def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran):
-    mesai_dict = dict(zip(sirketler_df["isim"], sirketler_df["mevcut_mesai"]))
-    sabit_list = sirketler_df[sirketler_df["sabit"] == True]["isim"].tolist()
+    mesai_dict = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_df.iterrows()}
+    sabit_list = [str(r["isim"]) for _, r in sirketler_df.iterrows() if r["sabit"]]
+    isimler    = [str(r["isim"]) for _, r in sirketler_df.iterrows()]
 
     def temiz(s):
         return "".join(c if c.isalnum() else "_" for c in str(s))
 
     prob = LpProblem("Optimizasyon", LpMinimize)
     x = {(s, saat): LpVariable(f"x_{temiz(s)}_{saat.replace(':','')}", cat="Binary")
-         for s in sirketler_df["isim"] for saat in mesai_secenekleri}
+         for s in isimler for saat in mesai_secenekleri}
 
-    # Her şirket 1 saatte başlasın
-    for s in sirketler_df["isim"]:
+    for s in isimler:
         prob += lpSum(x[s, saat] for saat in mesai_secenekleri) == 1
 
-    # Max sapma kısıtı
-    for s in sirketler_df["isim"]:
+    for s in isimler:
         mevcut = mesai_indeks.get(mesai_dict.get(s, "08:00"), 2)
         for saat in mesai_secenekleri:
             if abs(mesai_indeks[saat] - mevcut) > max_sapma:
                 prob += x[s, saat] == 0
 
-    # Sabit şirketler
     for s in sabit_list:
-        mevcut = mesai_dict.get(s, "08:00")
-        if mevcut in mesai_secenekleri:
-            prob += x[s, mevcut] == 1
+        m = mesai_dict.get(s, "08:00")
+        if m in mesai_secenekleri:
+            prob += x[s, m] == 1
 
-    # Her saatte min yük
-    toplam_cal = guzergah_df["calisan_sayisi"].sum()
-    for tepe_saat in ["08:00", "08:30", "09:00"]:
+    toplam_cal = int(guzergah_df["calisan_sayisi"].sum())
+    for tepe_saat in ["08:00","08:30","09:00"]:
         prob += lpSum(
-            x[s, tepe_saat] * guzergah_df[guzergah_df["sirket"]==s]["calisan_sayisi"].sum()
-            for s in sirketler_df["isim"]
+            x[s, tepe_saat] * int(guzergah_df[guzergah_df["sirket"]==s]["calisan_sayisi"].sum())
+            for s in isimler
         ) >= toplam_cal * min_tepe_oran
 
-    # Hedef: aynı ilçeden aynı saatte giden çalışanı minimize et
     hedef = []
     for ilce in guzergah_df["baslangic_ilce"].unique():
         ilce_guz = guzergah_df[guzergah_df["baslangic_ilce"] == ilce]
         for saat in mesai_secenekleri:
             for _, g in ilce_guz.iterrows():
-                if g["sirket"] in sirketler_df["isim"].values:
-                    hedef.append(x[g["sirket"], saat] * int(g["calisan_sayisi"]))
+                if str(g["sirket"]) in isimler:
+                    hedef.append(x[str(g["sirket"]), saat] * int(g["calisan_sayisi"]))
 
     prob += lpSum(hedef) if hedef else 0
     prob.solve(PULP_CBC_CMD(msg=0))
 
     yeni = {}
-    for s in sirketler_df["isim"]:
+    for s in isimler:
         for saat in mesai_secenekleri:
             if value(x[s, saat]) == 1:
                 yeni[s] = saat
-            
     return yeni
+
+# ── RENK PALETİ ──
+RENKLER = ["#E63946","#2196F3","#4CAF50","#FF9800","#9C27B0",
+           "#00BCD4","#F44336","#3F51B5","#8BC34A","#FF5722",
+           "#607D8B","#E91E63","#009688","#FFC107","#795548"]
+sirket_renk = {str(r["isim"]): RENKLER[i % len(RENKLER)]
+               for i, (_, r) in enumerate(sirketler.iterrows())}
 
 # ── ANA EKRAN ──
 col1, col2 = st.columns([3, 2])
@@ -212,77 +215,77 @@ col1, col2 = st.columns([3, 2])
 with col2:
     st.subheader("📋 Şirketler")
     st.dataframe(sirketler[["isim","mevcut_mesai","sabit"]], use_container_width=True, hide_index=True)
-    
-    st.subheader("🚌 Güzergahlar")
+
     ozet = guzergahlar.groupby("sirket").agg(
-        guzergah_sayisi=("baslangic_ilce","count"),
-        toplam_calisan=("calisan_sayisi","sum")
+        guzergah=("baslangic_ilce","count"),
+        calisan=("calisan_sayisi","sum")
     ).reset_index()
+    st.subheader("🚌 Güzergah Özeti")
     st.dataframe(ozet, use_container_width=True, hide_index=True)
 
     if st.button("🚀 Optimizasyonu Çalıştır", use_container_width=True, type="primary"):
-        with st.spinner("Algoritma hesaplıyor..."):
+        with st.spinner("Hesaplanıyor..."):
             yeni_mesai = optimizasyon_calistir(sirketler, guzergahlar, max_sapma, min_tepe)
-            st.session_state["yeni_mesai"]   = yeni_mesai
-            st.session_state["sirketler"]    = sirketler
-            st.session_state["guzergahlar"]  = guzergahlar
+            st.session_state["yeni_mesai"]  = yeni_mesai
+            st.session_state["sirketler"]   = sirketler
+            st.session_state["guzergahlar"] = guzergahlar
 
 with col1:
     st.subheader("🗺️ Harita")
-    m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
-
-    renkler_liste = ["#E63946","#2196F3","#4CAF50","#FF9800","#9C27B0",
-                     "#00BCD4","#F44336","#3F51B5","#8BC34A","#FF5722",
-                     "#607D8B","#E91E63","#009688","#FFC107","#795548"]
-    sirket_renk = {s: renkler_liste[i % len(renkler_liste)]
-                   for i, s in enumerate(sirketler["isim"])}
 
     yeni_mesai = st.session_state.get("yeni_mesai", {})
 
-    # Şirket merkezleri
-    for _, s in sirketler.iterrows():
-        eski = s["mevcut_mesai"]
-        yeni = yeni_mesai.get(s["isim"], eski)
-        degisti = eski != yeni
-        folium.CircleMarker(
-            [float(s["lat"]), float(s["lon"])], radius=12,
-            color=sirket_renk[s["isim"]], fill=True, fill_opacity=0.9,
-            popup=folium.Popup(
-                f"<b>{s['isim']}</b><br>"
-                f"Eski mesai: {eski}<br>"
-                f"Yeni mesai: {yeni}<br>"
-                f"{'✅ Kaydırıldı' if degisti else '— Değişmedi'}",
-                max_width=220)
-        ).add_to(m)
-
-    # Güzergah başlangıç noktaları
-    for ilce in guzergahlar["baslangic_ilce"].unique():
-        ilce_guz = guzergahlar[guzergahlar["baslangic_ilce"] == ilce]
-        lat = ilce_guz["baslangic_lat"].iloc[0]
-        lon = ilce_guz["baslangic_lon"].iloc[0]
-        toplam = ilce_guz["calisan_sayisi"].sum()
-        folium.CircleMarker(
-            [float(lat), float(lon)], radius=5 + min(toplam//20, 8),
-            color="gray", fill=True, fill_opacity=0.5,
-            popup=f"{ilce}\n{toplam} çalışan"
-        ).add_to(m)
+    m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
 
     # Güzergah çizgileri
     for _, g in guzergahlar.iterrows():
-        if g["sirket"] in sirketler["isim"].values:
-            sirket_row = sirketler[sirketler["isim"] == g["sirket"]].iloc[0]
+        sirket_adi = str(g["sirket"])
+        if sirket_adi in sirketler["isim"].values:
+            s_row = sirketler[sirketler["isim"] == sirket_adi].iloc[0]
             folium.PolyLine(
-                [[float(g["baslangic_lat"]), float(g["baslangic_lon"])],
-                 [float(sirket_row["lat"]), float(sirket_row["lon"])]],
-                color=sirket_renk.get(g["sirket"], "gray"),
-                weight=1.5, opacity=0.4,
-                tooltip=f"{g['sirket']} | {g['baslangic_ilce']} → {int(float(g['calisan_sayisi']))} çalışan"
+                locations=[
+                    [float(g["baslangic_lat"]), float(g["baslangic_lon"])],
+                    [float(s_row["lat"]),        float(s_row["lon"])]
+                ],
+                color=sirket_renk.get(sirket_adi, "gray"),
+                weight=1.5,
+                opacity=0.4,
+                tooltip=f"{sirket_adi} | {str(g['baslangic_ilce'])} ({int(g['calisan_sayisi'])} kişi)"
             ).add_to(m)
 
-    legend = """<div style="position:fixed;bottom:20px;left:20px;background:white;
-        padding:10px;border-radius:8px;border:1px solid #ccc;font-size:12px;">
-        ⬤ Büyük: Şirket &nbsp; ⬤ Küçük: İlçe &nbsp; ─ Güzergah</div>"""
-    m.get_root().html.add_child(folium.Element(legend))
+    # İlçe noktaları
+    ilce_grp = guzergahlar.groupby("baslangic_ilce").agg(
+        lat=("baslangic_lat","first"),
+        lon=("baslangic_lon","first"),
+        toplam=("calisan_sayisi","sum")
+    ).reset_index()
+
+    for _, r in ilce_grp.iterrows():
+        folium.CircleMarker(
+            location=[float(r["lat"]), float(r["lon"])],
+            radius=int(5 + min(int(r["toplam"]) // 20, 8)),
+            color="gray", fill=True, fill_opacity=0.5,
+            tooltip=f"{str(r['baslangic_ilce'])} — {int(r['toplam'])} çalışan"
+        ).add_to(m)
+
+    # Şirket noktaları
+    for _, s in sirketler.iterrows():
+        isim = str(s["isim"])
+        eski = str(s["mevcut_mesai"])
+        yeni = yeni_mesai.get(isim, eski)
+        degisti = eski != yeni
+        folium.CircleMarker(
+            location=[float(s["lat"]), float(s["lon"])],
+            radius=12,
+            color=sirket_renk.get(isim, "#333"),
+            fill=True,
+            fill_opacity=0.9,
+            popup=folium.Popup(
+                f"<b>{isim}</b><br>Eski: {eski}<br>Yeni: {yeni}<br>{'✅ Kaydırıldı' if degisti else '— Değişmedi'}",
+                max_width=220
+            )
+        ).add_to(m)
+
     st_folium(m, height=450, use_container_width=True)
 
 # ── SONUÇLAR ──
@@ -291,75 +294,56 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     st.subheader("📊 Optimizasyon Sonuçları")
 
     yeni_mesai  = st.session_state["yeni_mesai"]
-    sirketler_s = st.session_state["sirketler"]
-    guzergah_s  = st.session_state["guzergahlar"]
-    mesai_dict  = dict(zip(sirketler_s["isim"], sirketler_s["mevcut_mesai"]))
+    sirketler_s = df_temizle_sirket(st.session_state["sirketler"])
+    guzergah_s  = df_temizle_guzergah(st.session_state["guzergahlar"])
+    mesai_dict  = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_s.iterrows()}
 
     mevcut_skor, mevcut_detay = cakisma_hesapla(sirketler_s, guzergah_s, mesai_dict)
     yeni_skor,   yeni_detay   = cakisma_hesapla(sirketler_s, guzergah_s, yeni_mesai)
-    azalma = (mevcut_skor - yeni_skor) / mevcut_skor * 100 if mevcut_skor > 0 else 0
-    kaydirilan = sum(1 for s in sirketler_s["isim"] if mesai_dict.get(s) != yeni_mesai.get(s))
+    azalma    = (mevcut_skor - yeni_skor) / mevcut_skor * 100 if mevcut_skor > 0 else 0
+    kaydirilan = sum(1 for s in sirketler_s["isim"] if mesai_dict.get(str(s)) != yeni_mesai.get(str(s)))
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Eski Çakışma Skoru", f"{mevcut_skor:,}")
-    m2.metric("Yeni Çakışma Skoru", f"{yeni_skor:,}", f"-{mevcut_skor-yeni_skor:,}")
+    m1.metric("Eski Çakışma", f"{mevcut_skor:,}")
+    m2.metric("Yeni Çakışma", f"{yeni_skor:,}", f"-{mevcut_skor-yeni_skor:,}")
     m3.metric("Azalma", f"%{azalma:.1f}")
-    m4.metric("Kaydırılan Şirket", f"{kaydirilan} / {len(sirketler_s)}")
+    m4.metric("Kaydırılan", f"{kaydirilan}/{len(sirketler_s)}")
 
-    # Sonuç tablosu
     sonuc_rows = []
-    for s in sirketler_s["isim"]:
-        eski = mesai_dict.get(s, "08:00")
-        yeni = yeni_mesai.get(s, eski)
-        guz  = guzergah_s[guzergah_s["sirket"] == s]
+    for _, s in sirketler_s.iterrows():
+        isim = str(s["isim"])
+        eski = mesai_dict.get(isim, "08:00")
+        yeni = yeni_mesai.get(isim, eski)
+        guz  = guzergah_s[guzergah_s["sirket"] == isim]
         sonuc_rows.append({
-            "Şirket":        s,
-            "Eski Mesai":    eski,
-            "Yeni Mesai":    yeni,
-            "Güzergah Sayısı": len(guz),
-            "Toplam Çalışan": int(guz["calisan_sayisi"].sum()),
-            "Durum":         "✅ Kaydırıldı" if eski != yeni else "— Aynı kaldı"
+            "Şirket": isim, "Eski": eski, "Yeni": yeni,
+            "Güzergah": len(guz), "Çalışan": int(guz["calisan_sayisi"].sum()),
+            "Durum": "✅ Kaydırıldı" if eski != yeni else "— Aynı"
         })
-    
     st.dataframe(pd.DataFrame(sonuc_rows), use_container_width=True, hide_index=True)
 
     # Grafik
     yuk_e = {s: 0 for s in mesai_secenekleri}
     yuk_y = {s: 0 for s in mesai_secenekleri}
     for _, g in guzergah_s.iterrows():
-        if g["sirket"] in mesai_dict:
-            yuk_e[mesai_dict[g["sirket"]]]  += int(g["calisan_sayisi"])
-            yuk_y[yeni_mesai.get(g["sirket"], mesai_dict[g["sirket"]])] += int(g["calisan_sayisi"])
+        s = str(g["sirket"])
+        yuk_e[mesai_dict.get(s, "08:00")]  += int(g["calisan_sayisi"])
+        yuk_y[yeni_mesai.get(s, mesai_dict.get(s, "08:00"))] += int(g["calisan_sayisi"])
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 4))
-
-    xp = range(len(mesai_secenekleri))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4))
+    xp = list(range(len(mesai_secenekleri)))
     ax1.plot(xp, list(yuk_e.values()), "o-", color="#E63946", lw=2.5, ms=8, label="Önce")
     ax1.plot(xp, list(yuk_y.values()), "o-", color="#4CAF50", lw=2.5, ms=8, label="Sonra")
     ax1.fill_between(xp, list(yuk_e.values()), list(yuk_y.values()), alpha=0.12, color="#4CAF50")
-    ax1.set_xticks(list(xp)); ax1.set_xticklabels(mesai_secenekleri, rotation=30)
+    ax1.set_xticks(xp); ax1.set_xticklabels(mesai_secenekleri, rotation=30)
     ax1.set_title("Saate Göre Çalışan Yükü", fontweight="bold")
-    ax1.set_ylabel("Çalışan Sayısı"); ax1.legend(); ax1.grid(alpha=0.3)
-    ax1.spines[["top","right"]].set_visible(False)
+    ax1.legend(); ax1.grid(alpha=0.3); ax1.spines[["top","right"]].set_visible(False)
 
     ax2.bar(["Önce","Sonra"], [mevcut_skor, yeni_skor],
             color=["#E63946","#4CAF50"], width=0.5, edgecolor="white")
-    ax2.set_title("Toplam Çakışma Skoru", fontweight="bold")
     for i, v in enumerate([mevcut_skor, yeni_skor]):
-        ax2.text(i, v + 100, f"{v:,}", ha="center", fontweight="bold")
-    ax2.set_ylim(0, mevcut_skor * 1.15)
+        ax2.text(i, v + 50, f"{v:,}", ha="center", fontweight="bold")
+    ax2.set_title("Toplam Çakışma Skoru", fontweight="bold")
+    ax2.set_ylim(0, mevcut_skor * 1.2)
     ax2.spines[["top","right"]].set_visible(False)
-
     st.pyplot(fig)
-
-    if not mevcut_detay.empty:
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**En çakışan 10 nokta (önce):**")
-            st.dataframe(mevcut_detay.head(10), use_container_width=True, hide_index=True)
-        with col_b:
-            st.markdown("**En çakışan 10 nokta (sonra):**")
-            if not yeni_detay.empty:
-                st.dataframe(yeni_detay.head(10), use_container_width=True, hide_index=True)
-            else:
-                st.success("Çakışma kalmadı!")
