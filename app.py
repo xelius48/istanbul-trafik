@@ -97,7 +97,7 @@ min_tepe  = st.sidebar.slider("Tepe saatte min. şirket oranı (%)", 5, 40, 15) 
 # ── GÜZERGAHları simüle et ──
 @st.cache_data
 def guzergah_olustur(sirket_json, seed=42):
-    sirketler_df = pd.read_json(sirket_json)
+    sirketler_df = pd.read_json(io.StringIO(sirket_json))
     np.random.seed(seed)
     ilce_listesi = list(ilceler.keys())
     guzergahlar = []
