@@ -202,6 +202,14 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran):
                 yeni[s] = saat
     return yeni
 
+# ── GÜZERGAHLARA ŞİRKET KOORDİNATI EKLE ──
+sirket_konum = sirketler.set_index("isim")[["lat","lon"]].rename(
+    columns={"lat":"sirket_lat","lon":"sirket_lon"})
+guzergahlar = guzergahlar.join(
+    sirket_konum, on="sirket", how="left")
+guzergahlar["sirket_lat"] = guzergahlar["sirket_lat"].astype(float)
+guzergahlar["sirket_lon"] = guzergahlar["sirket_lon"].astype(float)
+
 # ── RENK PALETİ ──
 RENKLER = ["#E63946","#2196F3","#4CAF50","#FF9800","#9C27B0",
            "#00BCD4","#F44336","#3F51B5","#8BC34A","#FF5722",
@@ -239,7 +247,6 @@ with col1:
 
     # Güzergah çizgileri — OSRM ile gerçek yollar
     import requests as req
-    @st.cache_data(show_spinner=False)
     def gercek_rota(lat1, lon1, lat2, lon2):
         try:
             url = (f"http://router.project-osrm.org/route/v1/driving/"
@@ -254,7 +261,7 @@ with col1:
         sirket_adi = str(g["sirket"])
         if sirket_adi in sirketler["isim"].values:
             s_row = sirketler[sirketler["isim"] == sirket_adi].iloc[0]
-            koordinatlar = gercek_rota(
+            koordinatlar, _ = gercek_rota(
                 float(g["baslangic_lat"]), float(g["baslangic_lon"]),
                 float(s_row["lat"]),       float(s_row["lon"])
             )
@@ -316,11 +323,26 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     azalma    = (mevcut_skor - yeni_skor) / mevcut_skor * 100 if mevcut_skor > 0 else 0
     kaydirilan = sum(1 for s in sirketler_s["isim"] if mesai_dict.get(str(s)) != yeni_mesai.get(str(s)))
 
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Eski Çakışma", f"{mevcut_skor:,}")
     m2.metric("Yeni Çakışma", f"{yeni_skor:,}", f"-{mevcut_skor-yeni_skor:,}")
-    m3.metric("Azalma", f"%{azalma:.1f}")
-    m4.metric("Kaydırılan", f"{kaydirilan}/{len(sirketler_s)}")
+    m3.metric("Çakışma Azalması", f"%{azalma:.1f}")
+    m4.metric("Kaydırılan Şirket", f"{kaydirilan}/{len(sirketler_s)}")
+    m5.metric("Eski Ort. Süre", f"{ort_sure_eski} dk")
+    m6.metric("Yeni Ort. Süre", f"{ort_sure_yeni} dk", f"-{sure_fark:.1f} dk")
+
+    # Süre hesabı
+    guzergah_s2 = guzergah_s.copy()
+    sirket_konum2 = sirketler_s.set_index("isim")[["lat","lon"]].rename(
+        columns={"lat":"sirket_lat","lon":"sirket_lon"})
+    guzergah_s2 = guzergah_s2.join(sirket_konum2, on="sirket", how="left")
+    guzergah_s2["sirket_lat"] = guzergah_s2["sirket_lat"].fillna(41.0).astype(float)
+    guzergah_s2["sirket_lon"] = guzergah_s2["sirket_lon"].fillna(29.0).astype(float)
+
+    ort_sure_eski, detay_eski = sure_hesapla(guzergah_s2, mesai_dict)
+    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s2, yeni_mesai)
+    sure_fark = ort_sure_eski - ort_sure_yeni
+    sure_azalma = (sure_fark / ort_sure_eski * 100) if ort_sure_eski > 0 else 0
 
     sonuc_rows = []
     for _, s in sirketler_s.iterrows():
@@ -340,12 +362,20 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     yuk_y = {s: 0 for s in mesai_secenekleri}
     for _, g in guzergah_s.iterrows():
         s = str(g["sirket"])
-        e_saat = mesai_dict.get(s, "08:00")
-        y_saat = yeni_mesai.get(s, e_saat)
-        if e_saat in yuk_e:
-            yuk_e[e_saat] += int(g["calisan_sayisi"])
-        if y_saat in yuk_y:
-            yuk_y[y_saat] += int(g["calisan_sayisi"])
+        yuk_e[mesai_dict.get(s, "08:00")]  += int(g["calisan_sayisi"])
+        yuk_y[yeni_mesai.get(s, mesai_dict.get(s, "08:00"))] += int(g["calisan_sayisi"])
+
+    # Süre detay tablosu
+    with st.expander("🕐 Güzergah Bazlı Süre Detayı"):
+        col_x, col_y = st.columns(2)
+        with col_x:
+            st.markdown("**Önce (mevcut mesai):**")
+            st.dataframe(detay_eski.sort_values("Tahmini Süre (dk)", ascending=False),
+                        use_container_width=True, hide_index=True)
+        with col_y:
+            st.markdown("**Sonra (optimize):**")
+            st.dataframe(detay_yeni.sort_values("Tahmini Süre (dk)", ascending=False),
+                        use_container_width=True, hide_index=True)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4))
     xp = list(range(len(mesai_secenekleri)))
@@ -356,11 +386,12 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     ax1.set_title("Saate Göre Çalışan Yükü", fontweight="bold")
     ax1.legend(); ax1.grid(alpha=0.3); ax1.spines[["top","right"]].set_visible(False)
 
-    ax2.bar(["Önce","Sonra"], [mevcut_skor, yeni_skor],
+    ax2.bar(["Önce","Sonra"], [ort_sure_eski, ort_sure_yeni],
             color=["#E63946","#4CAF50"], width=0.5, edgecolor="white")
-    for i, v in enumerate([mevcut_skor, yeni_skor]):
-        ax2.text(i, v + 50, f"{v:,}", ha="center", fontweight="bold")
-    ax2.set_title("Toplam Çakışma Skoru", fontweight="bold")
-    ax2.set_ylim(0, mevcut_skor * 1.2)
+    for i, v in enumerate([ort_sure_eski, ort_sure_yeni]):
+        ax2.text(i, v + 0.5, f"{v} dk", ha="center", fontweight="bold")
+    ax2.set_title("Ortalama İşe Gidiş Süresi", fontweight="bold")
+    ax2.set_ylabel("Dakika")
+    ax2.set_ylim(0, ort_sure_eski * 1.3)
     ax2.spines[["top","right"]].set_visible(False)
     st.pyplot(fig)
