@@ -318,11 +318,35 @@ with col1:
                 float(g["baslangic_lat"]), float(g["baslangic_lon"]),
                 float(s_row["lat"]),       float(s_row["lon"])
             )
+            # Bu güzergah için süre hesapla
+            ort_lat = (float(g["baslangic_lat"]) + float(s_row["lat"])) / 2
+            ort_lon = (float(g["baslangic_lon"]) + float(s_row["lon"])) / 2
+            _, sure_sn = gercek_rota(
+                float(g["baslangic_lat"]), float(g["baslangic_lon"]),
+                float(s_row["lat"]),       float(s_row["lon"])
+            )
+            mesafe_km = (sure_sn / 3600) * 80
+
+            eski_saat  = str(s_row["mevcut_mesai"])
+            yeni_saat  = yeni_mesai.get(sirket_adi, eski_saat)
+            hiz_eski   = bolge_hizi_bul(ort_lat, ort_lon, eski_saat)
+            hiz_yeni   = bolge_hizi_bul(ort_lat, ort_lon, yeni_saat)
+            sure_eski  = round((mesafe_km / hiz_eski) * 60, 1) if hiz_eski > 0 else 0
+            sure_yeni  = round((mesafe_km / hiz_yeni) * 60, 1) if hiz_yeni > 0 else 0
+            fark       = round(sure_eski - sure_yeni, 1)
+            fark_str   = f"✅ {fark} dk kazanıldı" if fark > 0 else "— Değişmedi"
+
             folium.PolyLine(
                 locations=koordinatlar,
                 color=sirket_renk.get(sirket_adi, "gray"),
                 weight=2, opacity=0.5,
-                tooltip=f"{sirket_adi} | {str(g['baslangic_ilce'])} ({int(g['calisan_sayisi'])} kişi)"
+                tooltip=(
+                    f"{sirket_adi} | {str(g['baslangic_ilce'])} → {sirket_adi}\n"
+                    f"Mesafe: {round(mesafe_km,1)} km\n"
+                    f"Önce: {eski_saat} → {sure_eski} dk\n"
+                    f"Sonra: {yeni_saat} → {sure_yeni} dk\n"
+                    f"{fark_str}"
+                )
             ).add_to(m)
 
     # İlçe noktaları
