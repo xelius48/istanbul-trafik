@@ -39,11 +39,13 @@ def df_temizle_guzergah(df):
     return d
 
 def guzergaha_sirket_konum_ekle(guzergah_df, sirket_df):
-    konum = sirket_df[["isim","lat","lon"]].rename(
-        columns={"isim":"sirket","lat":"sirket_lat","lon":"sirket_lon"})
-    d = guzergah_df.merge(konum, on="sirket", how="left")
-    d["sirket_lat"] = d["sirket_lat"].fillna(41.0).astype(float)
-    d["sirket_lon"] = d["sirket_lon"].fillna(29.0).astype(float)
+    sirket_konum = {}
+    for _, s in sirket_df.iterrows():
+        sirket_konum[str(s["isim"])] = (float(s["lat"]), float(s["lon"]))
+    
+    d = guzergah_df.copy()
+    d["sirket_lat"] = d["sirket"].apply(lambda s: sirket_konum.get(str(s), (41.0, 29.0))[0])
+    d["sirket_lon"] = d["sirket"].apply(lambda s: sirket_konum.get(str(s), (41.0, 29.0))[1])
     return d
 
 # ── OSRM ROTA ──
