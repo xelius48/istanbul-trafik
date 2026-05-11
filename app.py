@@ -241,14 +241,16 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran):
     # Yinelemeli elastisite düzeltmesi (2 iterasyon)
     for iterasyon in range(1, 3):
         # Araç kaymasını hesapla
+        SERVIS_KAPASITESI = 20
         delta_araclar = {saat: 0 for saat in mesai_secenekleri}
         for _, g in guzergah_df.iterrows():
             s = str(g["sirket"])
             eski = mesai_dict.get(s, "08:00")
             yeni_s = yeni.get(s, eski)
             if eski != yeni_s:
-                delta_araclar[eski]  -= int(g["calisan_sayisi"])
-                delta_araclar[yeni_s] += int(g["calisan_sayisi"])
+                servis_sayisi = max(1, int(g["calisan_sayisi"]) // SERVIS_KAPASITESI)
+                delta_araclar[eski]  -= servis_sayisi
+                delta_araclar[yeni_s] += servis_sayisi
 
         # Yeni hızlarla süreleri güncelle
         sureler_yeni = guzergah_surelerini_hesapla(guzergah_df, delta_araclar)
@@ -475,14 +477,16 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     mesai_dict  = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_s.iterrows()}
 
     # Elastisite ile düzeltilmiş delta
+    SERVIS_KAPASITESI = 20
     delta_araclar = {saat: 0 for saat in mesai_secenekleri}
     for _, g in guzergah_s.iterrows():
         s = str(g["sirket"])
         eski = mesai_dict.get(s, "08:00")
         yeni = yeni_mesai.get(s, eski)
         if eski != yeni:
-            delta_araclar[eski]  -= int(g["calisan_sayisi"])
-            delta_araclar[yeni]  += int(g["calisan_sayisi"])
+            servis_sayisi = max(1, int(g["calisan_sayisi"]) // SERVIS_KAPASITESI)
+            delta_araclar[eski]  -= servis_sayisi
+            delta_araclar[yeni]  += servis_sayisi
 
     mevcut_skor, _ = cakisma_hesapla(guzergah_s, mesai_dict)
     yeni_skor,   _ = cakisma_hesapla(guzergah_s, yeni_mesai)
