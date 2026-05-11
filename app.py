@@ -249,8 +249,10 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran):
             yeni_s = yeni.get(s, eski)
             if eski != yeni_s:
                 servis_sayisi = max(1, int(g["calisan_sayisi"]) // SERVIS_KAPASITESI)
-                delta_araclar[eski]  -= servis_sayisi
-                delta_araclar[yeni_s] += servis_sayisi
+                if eski in delta_araclar:
+                    delta_araclar[eski] -= servis_sayisi
+                if yeni_s in delta_araclar:
+                    delta_araclar[yeni_s] += servis_sayisi
 
         # Yeni hızlarla süreleri güncelle
         sureler_yeni = guzergah_surelerini_hesapla(guzergah_df, delta_araclar)
