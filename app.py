@@ -340,8 +340,12 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     yuk_y = {s: 0 for s in mesai_secenekleri}
     for _, g in guzergah_s.iterrows():
         s = str(g["sirket"])
-        yuk_e[mesai_dict.get(s, "08:00")]  += int(g["calisan_sayisi"])
-        yuk_y[yeni_mesai.get(s, mesai_dict.get(s, "08:00"))] += int(g["calisan_sayisi"])
+        e_saat = mesai_dict.get(s, "08:00")
+        y_saat = yeni_mesai.get(s, e_saat)
+        if e_saat in yuk_e:
+            yuk_e[e_saat] += int(g["calisan_sayisi"])
+        if y_saat in yuk_y:
+            yuk_y[y_saat] += int(g["calisan_sayisi"])
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4))
     xp = list(range(len(mesai_secenekleri)))
