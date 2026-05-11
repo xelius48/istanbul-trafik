@@ -340,11 +340,12 @@ with col1:
                 locations=koordinatlar,
                 color=sirket_renk.get(sirket_adi, "gray"),
                 weight=2, opacity=0.5,
-                tooltip=(
-                    f"{sirket_adi} | {str(g['baslangic_ilce'])} → {sirket_adi}\n"
-                    f"Mesafe: {round(mesafe_km,1)} km\n"
-                    f"Önce: {eski_saat} → {sure_eski} dk\n"
-                    f"Sonra: {yeni_saat} → {sure_yeni} dk\n"
+                tooltip=folium.Tooltip(
+                    f"<b>{sirket_adi}</b><br>"
+                    f"{str(g['baslangic_ilce'])} → {sirket_adi}<br>"
+                    f"📏 Mesafe: {round(mesafe_km,1)} km<br>"
+                    f"⏱ Önce ({eski_saat}): {sure_eski} dk<br>"
+                    f"⏱ Sonra ({yeni_saat}): {sure_yeni} dk<br>"
                     f"{fark_str}"
                 )
             ).add_to(m)
