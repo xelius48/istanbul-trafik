@@ -15,12 +15,6 @@ st.markdown("Şirket servis güzergahlarını optimize ederek tepe saatteki traf
 mesai_secenekleri = ["07:00","07:30","08:00","08:30","09:00","09:30","10:00"]
 mesai_indeks      = {s: i for i, s in enumerate(mesai_secenekleri)}
 
-# Saate göre trafik yoğunluk katsayısı
-trafik_katsayi = {
-    "07:00": 1.3, "07:30": 1.5, "08:00": 1.8,
-    "08:30": 1.9, "09:00": 1.7, "09:30": 1.3, "10:00": 1.1
-}
-
 RENKLER = ["#E63946","#2196F3","#4CAF50","#FF9800","#9C27B0",
            "#00BCD4","#F44336","#3F51B5","#8BC34A","#FF5722",
            "#607D8B","#E91E63","#009688","#FFC107","#795548"]
@@ -67,20 +61,77 @@ def gercek_rota(lat1, lon1, lat2, lon2):
     except:
         return [[lat1, lon1], [lat2, lon2]], 1800.0
 
+# ── IBB HIZ TABLOSU (ayrı yükle, güvenli) ──
+@st.cache_data(show_spinner=False)
+def hiz_tablosunu_yukle():
+    try:
+        from ibb_hiz_tablosu import IBB_HIZ_TABLOSU
+        return IBB_HIZ_TABLOSU
+    except:
+        return {}
+
+@st.cache_data(show_spinner=False)
+def elastisite_tablosunu_yukle():
+    try:
+        from ibb_elastisite import IBB_ELASTISITE
+        return IBB_ELASTISITE
+    except:
+        return {}
+
+def bolge_hizi_bul(lat, lon, saat_str, delta_arac=0):
+    """
+    IBB verisinden koordinata en yakın bölgenin saatlik hızını döndür.
+    delta_arac: o bölgedeki araç değişimi (elastisite düzeltmesi için)
+    """
+    saat_int = int(saat_str.split(":")[0])
+    hiz_tablo = hiz_tablosunu_yukle()
+
+    # En yakın ızgara hücresi
+    en_yakin_mesafe = float("inf")
+    baz_hiz = 30.0
+    for (b_lat, b_lon), saatlik in hiz_tablo.items():
+        mesafe = abs(b_lat - lat) + abs(b_lon - lon)
+        if mesafe < en_yakin_mesafe:
+            en_yakin_mesafe = mesafe
+            baz_hiz = float(saatlik.get(saat_int, saatlik.get(str(saat_int), 30.0)))
+
+    # Elastisite düzeltmesi (opsiyonel)
+    if delta_arac != 0:
+        elastisite_tablo = elastisite_tablosunu_yukle()
+        if elastisite_tablo:
+            en_yakin_mesafe2 = float("inf")
+            slope = 0.0
+            for (b_lat, b_lon), v in elastisite_tablo.items():
+                mesafe = abs(b_lat - lat) + abs(b_lon - lon)
+                if mesafe < en_yakin_mesafe2:
+                    en_yakin_mesafe2 = mesafe
+                    slope = float(v.get("slope", 0.0))
+            # slope negatif → araç azalınca hız artar
+            duzeltme = slope * delta_arac
+            baz_hiz = max(5.0, min(120.0, baz_hiz - duzeltme))
+
+    return baz_hiz
+
 # ── SÜRE HESABI ──
-def sure_hesapla(guzergah_df, mesai_dict):
+def sure_hesapla(guzergah_df, mesai_dict, delta_araclar=None):
     toplam_sure = 0.0
     toplam_kisi = 0
     detay = []
+    if delta_araclar is None:
+        delta_araclar = {}
     for _, g in guzergah_df.iterrows():
         sirket  = str(g["sirket"])
         saat    = mesai_dict.get(sirket, "08:00")
-        katsayi = trafik_katsayi.get(saat, 1.5)
+        ort_lat = (float(g["baslangic_lat"]) + float(g["sirket_lat"])) / 2
+        ort_lon = (float(g["baslangic_lon"]) + float(g["sirket_lon"])) / 2
+        delta   = delta_araclar.get(saat, 0)
+        hiz_kmh = bolge_hizi_bul(ort_lat, ort_lon, saat, delta_arac=delta)
         _, sure_sn = gercek_rota(
             float(g["baslangic_lat"]), float(g["baslangic_lon"]),
             float(g["sirket_lat"]),    float(g["sirket_lon"])
         )
-        gercek_sure = (sure_sn * katsayi) / 60.0
+        mesafe_km   = (sure_sn / 3600) * 80
+        gercek_sure = (mesafe_km / hiz_kmh) * 60 if hiz_kmh > 0 else 45.0
         kisi = int(g["calisan_sayisi"])
         toplam_sure += gercek_sure * kisi
         toplam_kisi += kisi
@@ -88,6 +139,7 @@ def sure_hesapla(guzergah_df, mesai_dict):
             "Şirket":            sirket,
             "İlçe":              str(g["baslangic_ilce"]),
             "Mesai":             saat,
+            "Bölge Hızı (km/h)": round(hiz_kmh, 1),
             "Tahmini Süre (dk)": round(gercek_sure, 1),
             "Çalışan":           kisi
         })
@@ -110,6 +162,26 @@ def cakisma_hesapla(guzergah_df, mesai_dict):
     return toplam, detay_df
 
 # ── OPTİMİZASYON ──
+def guzergah_surelerini_hesapla(guzergah_df, delta_araclar=None):
+    if delta_araclar is None:
+        delta_araclar = {}
+    sureler = {}
+    for _, g in guzergah_df.iterrows():
+        sirket  = str(g["sirket"])
+        ilce    = str(g["baslangic_ilce"])
+        ort_lat = (float(g["baslangic_lat"]) + float(g["sirket_lat"])) / 2
+        ort_lon = (float(g["baslangic_lon"]) + float(g["sirket_lon"])) / 2
+        _, sure_sn = gercek_rota(
+            float(g["baslangic_lat"]), float(g["baslangic_lon"]),
+            float(g["sirket_lat"]),    float(g["sirket_lon"])
+        )
+        mesafe_km = (sure_sn / 3600) * 80
+        for saat in mesai_secenekleri:
+            delta = delta_araclar.get(saat, 0)
+            hiz   = bolge_hizi_bul(ort_lat, ort_lon, saat, delta_arac=delta)
+            sureler[(sirket, ilce, saat)] = round((mesafe_km / hiz) * 60 if hiz > 0 else 45.0, 2)
+    return sureler
+
 def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran):
     mesai_dict = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_df.iterrows()}
     sabit_list = [str(r["isim"]) for _, r in sirketler_df.iterrows() if r["sabit"]]
@@ -118,47 +190,74 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran):
     def temiz(s):
         return "".join(c if c.isalnum() else "_" for c in str(s))
 
-    prob = LpProblem("Optimizasyon", LpMinimize)
-    x = {(s, saat): LpVariable(f"x_{temiz(s)}_{saat.replace(':','')}", cat="Binary")
-         for s in isimler for saat in mesai_secenekleri}
+    def tek_optimizasyon(sureler, prefix=""):
+        prob = LpProblem(f"Sure_Min{prefix}", LpMinimize)
+        x = {(s, saat): LpVariable(f"x{prefix}_{temiz(s)}_{saat.replace(':','')}", cat="Binary")
+             for s in isimler for saat in mesai_secenekleri}
 
-    for s in isimler:
-        prob += lpSum(x[s, saat] for saat in mesai_secenekleri) == 1
+        for s in isimler:
+            prob += lpSum(x[s, saat] for saat in mesai_secenekleri) == 1
+        for s in isimler:
+            mevcut = mesai_indeks.get(mesai_dict.get(s, "08:00"), 2)
+            for saat in mesai_secenekleri:
+                if abs(mesai_indeks[saat] - mevcut) > max_sapma:
+                    prob += x[s, saat] == 0
+        for s in sabit_list:
+            m = mesai_dict.get(s, "08:00")
+            if m in mesai_secenekleri:
+                prob += x[s, m] == 1
 
-    for s in isimler:
-        mevcut = mesai_indeks.get(mesai_dict.get(s, "08:00"), 2)
-        for saat in mesai_secenekleri:
-            if abs(mesai_indeks[saat] - mevcut) > max_sapma:
-                prob += x[s, saat] == 0
+        toplam_cal = int(guzergah_df["calisan_sayisi"].sum())
+        for tepe_saat in ["08:00","08:30","09:00"]:
+            prob += lpSum(
+                x[s, tepe_saat] * int(guzergah_df[guzergah_df["sirket"]==s]["calisan_sayisi"].sum())
+                for s in isimler
+            ) >= toplam_cal * min_tepe_oran
 
-    for s in sabit_list:
-        m = mesai_dict.get(s, "08:00")
-        if m in mesai_secenekleri:
-            prob += x[s, m] == 1
+        hedef = []
+        for _, g in guzergah_df.iterrows():
+            sirket = str(g["sirket"])
+            ilce   = str(g["baslangic_ilce"])
+            kisi   = int(g["calisan_sayisi"])
+            if sirket in isimler:
+                for saat in mesai_secenekleri:
+                    sure = sureler.get((sirket, ilce, saat), 45.0)
+                    hedef.append(x[sirket, saat] * kisi * sure)
 
-    toplam_cal = int(guzergah_df["calisan_sayisi"].sum())
-    for tepe_saat in ["08:00","08:30","09:00"]:
-        prob += lpSum(
-            x[s, tepe_saat] * int(guzergah_df[guzergah_df["sirket"]==s]["calisan_sayisi"].sum())
-            for s in isimler
-        ) >= toplam_cal * min_tepe_oran
+        prob += lpSum(hedef)
+        prob.solve(PULP_CBC_CMD(msg=0))
 
-    hedef = []
-    for ilce in guzergah_df["baslangic_ilce"].unique():
-        ilce_guz = guzergah_df[guzergah_df["baslangic_ilce"] == ilce]
-        for saat in mesai_secenekleri:
-            for _, g in ilce_guz.iterrows():
-                if str(g["sirket"]) in isimler:
-                    hedef.append(x[str(g["sirket"]), saat] * int(g["calisan_sayisi"]))
+        sonuc = {}
+        for s in isimler:
+            for saat in mesai_secenekleri:
+                if value(x[s, saat]) == 1:
+                    sonuc[s] = saat
+        return sonuc
 
-    prob += lpSum(hedef) if hedef else 0
-    prob.solve(PULP_CBC_CMD(msg=0))
+    # İlk optimizasyon (baz IBB hızlarıyla)
+    sureler0 = guzergah_surelerini_hesapla(guzergah_df)
+    yeni = tek_optimizasyon(sureler0, "0")
 
-    yeni = {}
-    for s in isimler:
-        for saat in mesai_secenekleri:
-            if value(x[s, saat]) == 1:
-                yeni[s] = saat
+    # Yinelemeli elastisite düzeltmesi (2 iterasyon)
+    for iterasyon in range(1, 3):
+        # Araç kaymasını hesapla
+        delta_araclar = {saat: 0 for saat in mesai_secenekleri}
+        for _, g in guzergah_df.iterrows():
+            s = str(g["sirket"])
+            eski = mesai_dict.get(s, "08:00")
+            yeni_s = yeni.get(s, eski)
+            if eski != yeni_s:
+                delta_araclar[eski]  -= int(g["calisan_sayisi"])
+                delta_araclar[yeni_s] += int(g["calisan_sayisi"])
+
+        # Yeni hızlarla süreleri güncelle
+        sureler_yeni = guzergah_surelerini_hesapla(guzergah_df, delta_araclar)
+        yeni_iter = tek_optimizasyon(sureler_yeni, str(iterasyon))
+
+        if yeni_iter == yeni:
+            break
+        yeni = yeni_iter
+
     return yeni
 
 # ── VARSAYILAN VERİ ──
@@ -256,7 +355,6 @@ with st.sidebar.expander("📋 Excel formatı"):
 max_sapma = st.sidebar.slider("Max mesai kayması (adım)", 1, 4, 2, help="1 adım = 30 dk")
 min_tepe  = st.sidebar.slider("Tepe saatte min. oran (%)", 5, 40, 15) / 100
 
-# Güzergaha şirket konumu ekle
 guzergahlar = guzergaha_sirket_konum_ekle(guzergahlar, sirketler)
 sirket_renk = {str(r["isim"]): RENKLER[i % len(RENKLER)]
                for i, (_, r) in enumerate(sirketler.iterrows())}
@@ -288,23 +386,52 @@ with col1:
 
     m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
 
-    # Güzergah çizgileri
     for _, g in guzergahlar.iterrows():
         sirket_adi = str(g["sirket"])
         if sirket_adi in sirketler["isim"].values:
             s_row = sirketler[sirketler["isim"] == sirket_adi].iloc[0]
-            koordinatlar, _ = gercek_rota(
+            koordinatlar, sure_sn = gercek_rota(
                 float(g["baslangic_lat"]), float(g["baslangic_lon"]),
                 float(s_row["lat"]),       float(s_row["lon"])
             )
+            mesafe_km = (sure_sn / 3600) * 80
+            ort_lat   = (float(g["baslangic_lat"]) + float(s_row["lat"])) / 2
+            ort_lon   = (float(g["baslangic_lon"]) + float(s_row["lon"])) / 2
+            eski_saat = str(s_row["mevcut_mesai"])
+            yeni_saat = yeni_mesai.get(sirket_adi, eski_saat)
+
+            if yeni_mesai:
+                hiz_eski  = bolge_hizi_bul(ort_lat, ort_lon, eski_saat)
+                hiz_yeni  = bolge_hizi_bul(ort_lat, ort_lon, yeni_saat)
+                sure_eski = round((mesafe_km / hiz_eski) * 60, 1) if hiz_eski > 0 else 0
+                sure_yeni = round((mesafe_km / hiz_yeni) * 60, 1) if hiz_yeni > 0 else 0
+                fark      = round(sure_eski - sure_yeni, 1)
+                fark_str  = f"✅ {fark} dk kazanıldı" if fark > 0 else "— Değişmedi"
+                tooltip_text = (
+                    f"<b>{sirket_adi}</b><br>"
+                    f"{str(g['baslangic_ilce'])} → {sirket_adi}<br>"
+                    f"📏 Mesafe: {round(mesafe_km,1)} km<br>"
+                    f"⏱ Önce ({eski_saat}): {sure_eski} dk<br>"
+                    f"⏱ Sonra ({yeni_saat}): {sure_yeni} dk<br>"
+                    f"{fark_str}"
+                )
+            else:
+                hiz  = bolge_hizi_bul(ort_lat, ort_lon, eski_saat)
+                sure = round((mesafe_km / hiz) * 60, 1) if hiz > 0 else 0
+                tooltip_text = (
+                    f"<b>{sirket_adi}</b><br>"
+                    f"{str(g['baslangic_ilce'])} → {sirket_adi}<br>"
+                    f"📏 Mesafe: {round(mesafe_km,1)} km<br>"
+                    f"⏱ Mevcut ({eski_saat}): {sure} dk"
+                )
+
             folium.PolyLine(
                 locations=koordinatlar,
                 color=sirket_renk.get(sirket_adi, "gray"),
                 weight=2, opacity=0.5,
-                tooltip=f"{sirket_adi} | {str(g['baslangic_ilce'])} ({int(g['calisan_sayisi'])} kişi)"
+                tooltip=folium.Tooltip(tooltip_text)
             ).add_to(m)
 
-    # İlçe noktaları
     ilce_grp = guzergahlar.groupby("baslangic_ilce").agg(
         lat=("baslangic_lat","first"),
         lon=("baslangic_lon","first"),
@@ -318,11 +445,10 @@ with col1:
             tooltip=f"{str(r['baslangic_ilce'])} — {int(r['toplam'])} çalışan"
         ).add_to(m)
 
-    # Şirket noktaları
     for _, s in sirketler.iterrows():
-        isim  = str(s["isim"])
-        eski  = str(s["mevcut_mesai"])
-        yeni  = yeni_mesai.get(isim, eski)
+        isim    = str(s["isim"])
+        eski    = str(s["mevcut_mesai"])
+        yeni    = yeni_mesai.get(isim, eski)
         degisti = eski != yeni
         folium.CircleMarker(
             location=[float(s["lat"]), float(s["lon"])],
@@ -348,25 +474,33 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     guzergah_s  = guzergaha_sirket_konum_ekle(guzergah_s, sirketler_s)
     mesai_dict  = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_s.iterrows()}
 
+    # Elastisite ile düzeltilmiş delta
+    delta_araclar = {saat: 0 for saat in mesai_secenekleri}
+    for _, g in guzergah_s.iterrows():
+        s = str(g["sirket"])
+        eski = mesai_dict.get(s, "08:00")
+        yeni = yeni_mesai.get(s, eski)
+        if eski != yeni:
+            delta_araclar[eski]  -= int(g["calisan_sayisi"])
+            delta_araclar[yeni]  += int(g["calisan_sayisi"])
+
     mevcut_skor, _ = cakisma_hesapla(guzergah_s, mesai_dict)
     yeni_skor,   _ = cakisma_hesapla(guzergah_s, yeni_mesai)
     azalma         = (mevcut_skor - yeni_skor) / mevcut_skor * 100 if mevcut_skor > 0 else 0
     kaydirilan     = sum(1 for s in sirketler_s["isim"] if mesai_dict.get(str(s)) != yeni_mesai.get(str(s)))
 
     ort_sure_eski, detay_eski = sure_hesapla(guzergah_s, mesai_dict)
-    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s, yeni_mesai)
-    sure_fark  = ort_sure_eski - ort_sure_yeni
+    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s, yeni_mesai, delta_araclar)
+    sure_fark = ort_sure_eski - ort_sure_yeni
 
-    # Metrikler
     m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Eski Çakışma",       f"{mevcut_skor:,}")
-    m2.metric("Yeni Çakışma",       f"{yeni_skor:,}",      f"-{mevcut_skor-yeni_skor:,}")
-    m3.metric("Çakışma Azalması",   f"%{azalma:.1f}")
-    m4.metric("Kaydırılan Şirket",  f"{kaydirilan}/{len(sirketler_s)}")
-    m5.metric("Eski Ort. Süre",     f"{ort_sure_eski} dk")
-    m6.metric("Yeni Ort. Süre",     f"{ort_sure_yeni} dk", f"-{sure_fark:.1f} dk")
+    m1.metric("Eski Çakışma",      f"{mevcut_skor:,}")
+    m2.metric("Yeni Çakışma",      f"{yeni_skor:,}", f"-{mevcut_skor-yeni_skor:,}")
+    m3.metric("Çakışma Azalması",  f"%{azalma:.1f}")
+    m4.metric("Kaydırılan Şirket", f"{kaydirilan}/{len(sirketler_s)}")
+    m5.metric("Eski Ort. Süre",    f"{ort_sure_eski} dk")
+    m6.metric("Yeni Ort. Süre",    f"{ort_sure_yeni} dk", f"-{sure_fark:.1f} dk")
 
-    # Sonuç tablosu
     sonuc_rows = []
     for _, s in sirketler_s.iterrows():
         isim = str(s["isim"])
@@ -383,7 +517,6 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
         })
     st.dataframe(pd.DataFrame(sonuc_rows), use_container_width=True, hide_index=True)
 
-    # Süre detayı
     with st.expander("🕐 Güzergah Bazlı Süre Detayı"):
         cx, cy = st.columns(2)
         with cx:
@@ -391,11 +524,10 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
             st.dataframe(detay_eski.sort_values("Tahmini Süre (dk)", ascending=False),
                          use_container_width=True, hide_index=True)
         with cy:
-            st.markdown("**Sonra (optimize):**")
+            st.markdown("**Sonra (optimize + elastisite):**")
             st.dataframe(detay_yeni.sort_values("Tahmini Süre (dk)", ascending=False),
                          use_container_width=True, hide_index=True)
 
-    # Grafik
     yuk_e = {s: 0 for s in mesai_secenekleri}
     yuk_y = {s: 0 for s in mesai_secenekleri}
     for _, g in guzergah_s.iterrows():
