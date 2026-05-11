@@ -15,12 +15,6 @@ st.markdown("Şirket servis güzergahlarını optimize ederek tepe saatteki traf
 mesai_secenekleri = ["07:00","07:30","08:00","08:30","09:00","09:30","10:00"]
 mesai_indeks      = {s: i for i, s in enumerate(mesai_secenekleri)}
 
-# Saate göre trafik yoğunluk katsayısı
-trafik_katsayi = {
-    "07:00": 1.3, "07:30": 1.5, "08:00": 1.8,
-    "08:30": 1.9, "09:00": 1.7, "09:30": 1.3, "10:00": 1.1
-}
-
 RENKLER = ["#E63946","#2196F3","#4CAF50","#FF9800","#9C27B0",
            "#00BCD4","#F44336","#3F51B5","#8BC34A","#FF5722",
            "#607D8B","#E91E63","#009688","#FFC107","#795548"]
@@ -67,19 +61,44 @@ def gercek_rota(lat1, lon1, lat2, lon2):
         return [[lat1, lon1], [lat2, lon2]], 1800.0
 
 # ── SÜRE HESABI ──
+def bolge_hizi_bul(lat, lon, saat_str):
+    """IBB verisinden koordinata en yakın bölgenin saatlik hızını döndür"""
+    from ibb_hiz_tablosu import IBB_HIZ_TABLOSU
+    saat_int = int(saat_str.split(":")[0])
+    en_yakin_mesafe = float("inf")
+    en_yakin_hiz = 30.0
+    for (b_lat, b_lon), saatlik in IBB_HIZ_TABLOSU.items():
+        mesafe = abs(b_lat - lat) + abs(b_lon - lon)
+        if mesafe < en_yakin_mesafe:
+            en_yakin_mesafe = mesafe
+            en_yakin_hiz = saatlik.get(saat_int, 30.0)
+    return en_yakin_hiz
+
 def sure_hesapla(guzergah_df, mesai_dict):
     toplam_sure = 0.0
     toplam_kisi = 0
     detay = []
     for _, g in guzergah_df.iterrows():
-        sirket  = str(g["sirket"])
-        saat    = mesai_dict.get(sirket, "08:00")
-        katsayi = trafik_katsayi.get(saat, 1.5)
+        sirket = str(g["sirket"])
+        saat   = mesai_dict.get(sirket, "08:00")
+
+        # Rotanın orta noktasını al
+        ort_lat = (float(g["baslangic_lat"]) + float(g["sirket_lat"])) / 2
+        ort_lon = (float(g["baslangic_lon"]) + float(g["sirket_lon"])) / 2
+
+        # IBB verisinden o bölgenin o saatteki gerçek hızı
+        hiz_kmh = bolge_hizi_bul(ort_lat, ort_lon, saat)
+
+        # OSRM'den mesafe (km)
         _, sure_sn = gercek_rota(
             float(g["baslangic_lat"]), float(g["baslangic_lon"]),
             float(g["sirket_lat"]),    float(g["sirket_lon"])
         )
-        gercek_sure = (sure_sn * katsayi) / 60.0
+        mesafe_km = (sure_sn / 3600) * 80  # OSRM ideal hız ~80 km/h varsayımı
+        
+        # Gerçek süre = mesafe / IBB hızı
+        gercek_sure = (mesafe_km / hiz_kmh) * 60 if hiz_kmh > 0 else 45.0
+
         kisi = int(g["calisan_sayisi"])
         toplam_sure += gercek_sure * kisi
         toplam_kisi += kisi
@@ -87,6 +106,7 @@ def sure_hesapla(guzergah_df, mesai_dict):
             "Şirket":            sirket,
             "İlçe":              str(g["baslangic_ilce"]),
             "Mesai":             saat,
+            "Bölge Hızı (km/h)": round(hiz_kmh, 1),
             "Tahmini Süre (dk)": round(gercek_sure, 1),
             "Çalışan":           kisi
         })
