@@ -20,12 +20,20 @@ RENKLER = ["#E63946","#2196F3","#4CAF50","#FF9800","#9C27B0",
            "#607D8B","#E91E63","#009688","#FFC107","#795548"]
 
 # ── VERİ TEMİZLEME ──
+def mesai_formatla(deger):
+    """07:30:00 veya 07:30 formatını 07:30 a normalize et"""
+    s = str(deger).strip()
+    parcalar = s.split(":")
+    if len(parcalar) >= 2:
+        return f"{parcalar[0].zfill(2)}:{parcalar[1].zfill(2)}"
+    return "08:00"
+
 def df_temizle_sirket(df):
     d = df.copy()
     d["lat"]          = d["lat"].astype(float)
     d["lon"]          = d["lon"].astype(float)
     d["isim"]         = d["isim"].astype(str)
-    d["mevcut_mesai"] = d["mevcut_mesai"].astype(str)
+    d["mevcut_mesai"] = d["mevcut_mesai"].apply(mesai_formatla)
     d["sabit"]        = d["sabit"].astype(bool)
     return d
 
@@ -89,7 +97,11 @@ def bolge_hizi_bul(lat, lon, saat_str, delta_arac=0):
     # En yakın ızgara hücresi
     en_yakin_mesafe = float("inf")
     baz_hiz = 30.0
-    for (b_lat, b_lon), saatlik in hiz_tablo.items():
+    for key, saatlik in hiz_tablo.items():
+        try:
+            b_lat, b_lon = float(key[0]), float(key[1])
+        except:
+            continue
         mesafe = abs(b_lat - lat) + abs(b_lon - lon)
         if mesafe < en_yakin_mesafe:
             en_yakin_mesafe = mesafe
@@ -101,12 +113,15 @@ def bolge_hizi_bul(lat, lon, saat_str, delta_arac=0):
         if elastisite_tablo:
             en_yakin_mesafe2 = float("inf")
             slope = 0.0
-            for (b_lat, b_lon), v in elastisite_tablo.items():
+            for key, v in elastisite_tablo.items():
+                try:
+                    b_lat, b_lon = float(key[0]), float(key[1])
+                except:
+                    continue
                 mesafe = abs(b_lat - lat) + abs(b_lon - lon)
                 if mesafe < en_yakin_mesafe2:
                     en_yakin_mesafe2 = mesafe
                     slope = float(v.get("slope", 0.0))
-            # slope negatif → araç azalınca hız artar
             duzeltme = slope * delta_arac
             baz_hiz = max(5.0, min(120.0, baz_hiz - duzeltme))
 
