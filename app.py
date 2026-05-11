@@ -39,9 +39,9 @@ def df_temizle_guzergah(df):
     return d
 
 def guzergaha_sirket_konum_ekle(guzergah_df, sirket_df):
-    konum = sirket_df.set_index("isim")[["lat","lon"]].rename(
-        columns={"lat":"sirket_lat","lon":"sirket_lon"})
-    d = guzergah_df.join(konum, on="sirket", how="left")
+    konum = sirket_df[["isim","lat","lon"]].rename(
+        columns={"isim":"sirket","lat":"sirket_lat","lon":"sirket_lon"})
+    d = guzergah_df.merge(konum, on="sirket", how="left")
     d["sirket_lat"] = d["sirket_lat"].fillna(41.0).astype(float)
     d["sirket_lon"] = d["sirket_lon"].fillna(29.0).astype(float)
     return d
