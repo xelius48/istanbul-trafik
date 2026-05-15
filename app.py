@@ -197,7 +197,7 @@ def guzergah_surelerini_hesapla(guzergah_df, delta_araclar=None):
             sureler[(sirket, ilce, saat)] = round((mesafe_km / hiz) * 60 if hiz > 0 else 45.0, 2)
     return sureler
 
-def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran):
+def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, mod="ortalama_sure"):
     mesai_dict = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_df.iterrows()}
     sabit_list = [str(r["isim"]) for _, r in sirketler_df.iterrows() if r["sabit"]]
     isimler    = [str(r["isim"]) for _, r in sirketler_df.iterrows()]
@@ -240,16 +240,41 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran):
         ort_sure = sum(mevcut_sureler.values()) / len(mevcut_sureler) if mevcut_sureler else 45.0
 
         hedef = []
-        for _, g in guzergah_df.iterrows():
-            sirket = str(g["sirket"])
-            ilce   = str(g["baslangic_ilce"])
-            kisi   = int(g["calisan_sayisi"])
-            if sirket in isimler:
-                mevcut_sure = mevcut_sureler.get((sirket, ilce), 45.0)
-                agirlik = max(0.5, mevcut_sure / ort_sure)
-                for saat in mesai_secenekleri:
-                    sure = sureler.get((sirket, ilce, saat), 45.0)
-                    hedef.append(x[sirket, saat] * kisi * sure * agirlik)
+
+        if mod == "peak_yuk":
+            # MOD 2: Tepe saatteki araç yükünü minimize et
+            tepe_saatler = ["08:00", "08:30", "09:00"]
+            for _, g in guzergah_df.iterrows():
+                sirket = str(g["sirket"])
+                kisi   = int(g["calisan_sayisi"])
+                servis = max(1, kisi // 20)
+                if sirket in isimler:
+                    for saat in tepe_saatler:
+                        hedef.append(x[sirket, saat] * servis)
+
+        elif mod == "uzun_sure":
+            # MOD 1: Uzun güzergahlara ağırlık ver
+            for _, g in guzergah_df.iterrows():
+                sirket = str(g["sirket"])
+                ilce   = str(g["baslangic_ilce"])
+                kisi   = int(g["calisan_sayisi"])
+                if sirket in isimler:
+                    mevcut_sure = mevcut_sureler.get((sirket, ilce), 45.0)
+                    agirlik = max(0.5, mevcut_sure / ort_sure)
+                    for saat in mesai_secenekleri:
+                        sure = sureler.get((sirket, ilce, saat), 45.0)
+                        hedef.append(x[sirket, saat] * kisi * sure * agirlik)
+
+        else:
+            # MOD 3: Ortalama süreyi minimize et (eşit ağırlık)
+            for _, g in guzergah_df.iterrows():
+                sirket = str(g["sirket"])
+                ilce   = str(g["baslangic_ilce"])
+                kisi   = int(g["calisan_sayisi"])
+                if sirket in isimler:
+                    for saat in mesai_secenekleri:
+                        sure = sureler.get((sirket, ilce, saat), 45.0)
+                        hedef.append(x[sirket, saat] * kisi * sure)
 
         prob += lpSum(hedef)
         prob.solve(PULP_CBC_CMD(msg=0))
@@ -386,6 +411,29 @@ with st.sidebar.expander("📋 Excel formatı"):
 max_sapma = st.sidebar.slider("Max mesai kayması (adım)", 1, 4, 2, help="1 adım = 30 dk")
 min_tepe  = st.sidebar.slider("Tepe saatte min. oran (%)", 5, 40, 15) / 100
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎯 Optimizasyon Modu")
+opt_mod = st.sidebar.radio(
+    "Hedef fonksiyon:",
+    options=["uzun_sure", "peak_yuk", "ortalama_sure"],
+    format_func=lambda x: {
+        "uzun_sure":      "⏱ En uzun süreyi kısalt",
+        "peak_yuk":       "🚗 Tepe saatteki araç yükünü azalt",
+        "ortalama_sure":  "📊 Ortalama süreyi kısalt"
+    }[x],
+
+)
+with st.sidebar.expander("ℹ️ Modlar hakkında"):
+    st.markdown("""
+**En uzun süreyi kısalt:** Mevcut süresi uzun olan güzergahlara daha yüksek ağırlık verir. 2 saatlik yol, 30 dakikalık yoldan çok daha önceliklidir.
+
+**Tepe saatteki araç yükünü azalt:** Saat 08:00-09:00 arasında yolda olan araç sayısını minimize eder. İstanbul genelinde en yoğun anı hedefler.
+
+**Ortalama süreyi kısalt:** Tüm güzergahları eşit ağırlıkla ele alır, genel ortalama yolculuk süresini düşürür.
+
+Tüm modlar dinamik iteratif hız hesabı kullanır: mesai değişince araç sayısı değişir, hız güncellenir, süre yeniden hesaplanır.
+    """)
+
 guzergahlar = guzergaha_sirket_konum_ekle(guzergahlar, sirketler)
 sirket_renk = {str(r["isim"]): RENKLER[i % len(RENKLER)]
                for i, (_, r) in enumerate(sirketler.iterrows())}
@@ -406,7 +454,7 @@ with col2:
 
     if st.button("🚀 Optimizasyonu Çalıştır", use_container_width=True, type="primary"):
         with st.spinner("Hesaplanıyor..."):
-            yeni_mesai = optimizasyon_calistir(sirketler, guzergahlar, max_sapma, min_tepe)
+            yeni_mesai = optimizasyon_calistir(sirketler, guzergahlar, max_sapma, min_tepe, opt_mod)
             st.session_state["yeni_mesai"]  = yeni_mesai
             st.session_state["sirketler"]   = sirketler
             st.session_state["guzergahlar"] = guzergahlar
@@ -497,7 +545,12 @@ with col1:
 # ── SONUÇLAR ──
 if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     st.markdown("---")
-    st.subheader("📊 Optimizasyon Sonuçları")
+    mod_labels = {
+        "uzun_sure":     "⏱ En Uzun Süreyi Kısalt",
+        "peak_yuk":      "🚗 Tepe Saatteki Araç Yükünü Azalt",
+        "ortalama_sure": "📊 Ortalama Süreyi Kısalt"
+    }
+    st.subheader(f"📊 Optimizasyon Sonuçları — {mod_labels.get(opt_mod, '')}"  )
 
     yeni_mesai  = st.session_state["yeni_mesai"]
     sirketler_s = df_temizle_sirket(st.session_state["sirketler"])
