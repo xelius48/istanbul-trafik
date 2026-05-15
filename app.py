@@ -229,15 +229,27 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran):
                 for s in isimler
             ) >= toplam_cal * min_tepe_oran
 
+        # Mevcut süreler (ağırlık hesabı için)
+        mevcut_sureler = {}
+        for _, g in guzergah_df.iterrows():
+            sirket = str(g["sirket"])
+            ilce   = str(g["baslangic_ilce"])
+            mevcut = mesai_dict.get(sirket, "08:00")
+            mevcut_sureler[(sirket, ilce)] = sureler.get((sirket, ilce, mevcut), 45.0)
+
+        ort_sure = sum(mevcut_sureler.values()) / len(mevcut_sureler) if mevcut_sureler else 45.0
+
         hedef = []
         for _, g in guzergah_df.iterrows():
             sirket = str(g["sirket"])
             ilce   = str(g["baslangic_ilce"])
             kisi   = int(g["calisan_sayisi"])
             if sirket in isimler:
+                mevcut_sure = mevcut_sureler.get((sirket, ilce), 45.0)
+                agirlik = max(0.5, mevcut_sure / ort_sure)
                 for saat in mesai_secenekleri:
                     sure = sureler.get((sirket, ilce, saat), 45.0)
-                    hedef.append(x[sirket, saat] * kisi * sure)
+                    hedef.append(x[sirket, saat] * kisi * sure * agirlik)
 
         prob += lpSum(hedef)
         prob.solve(PULP_CBC_CMD(msg=0))
