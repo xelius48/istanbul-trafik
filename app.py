@@ -423,7 +423,7 @@ opt_mod = st.sidebar.radio(
     }[x],
 
 )
-with st.sidebar.expander("ℹ️ Modlar hakkında"):
+with st.sidebar.expander("Modlar hakkında"):
     st.markdown("""
 **En uzun süreyi kısalt:** Mevcut süresi uzun olan güzergahlara daha yüksek ağırlık verir. 2 saatlik yol, 30 dakikalık yoldan çok daha önceliklidir.
 
@@ -460,7 +460,7 @@ with col2:
             st.session_state["guzergahlar"] = guzergahlar
 
 with col1:
-    st.subheader("🗺️ Harita")
+    st.subheader("Harita")
     yeni_mesai = st.session_state.get("yeni_mesai", {})
 
     m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
@@ -500,8 +500,8 @@ with col1:
                 tooltip_text = (
                     f"<b>{sirket_adi}</b><br>"
                     f"{str(g['baslangic_ilce'])} → {sirket_adi}<br>"
-                    f"📏 Mesafe: {round(mesafe_km,1)} km<br>"
-                    f"⏱ Mevcut ({eski_saat}): {sure} dk"
+                    f"Mesafe: {round(mesafe_km,1)} km<br>"
+                    f"Mevcut ({eski_saat}): {sure} dk"
                 )
 
             folium.PolyLine(
@@ -550,7 +550,7 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
         "peak_yuk":      "Tepe Saatteki Araç Yükünü Azalt",
         "ortalama_sure": "Ortalama Süreyi Kısalt"
     }
-    st.subheader(f"📊 Optimizasyon Sonuçları — {mod_labels.get(opt_mod, '')}"  )
+    st.subheader(f"Optimizasyon Sonuçları — {mod_labels.get(opt_mod, '')}"  )
 
     yeni_mesai  = st.session_state["yeni_mesai"]
     sirketler_s = df_temizle_sirket(st.session_state["sirketler"])
@@ -605,7 +605,7 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
         })
     st.dataframe(pd.DataFrame(sonuc_rows), use_container_width=True, hide_index=True)
 
-    with st.expander("🕐 Güzergah Bazlı Süre Detayı"):
+    with st.expander("Güzergah Bazlı Süre Detayı"):
         cx, cy = st.columns(2)
         with cx:
             st.markdown("**Önce (mevcut mesai):**")
