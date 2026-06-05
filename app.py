@@ -78,10 +78,29 @@ def hiz_tablosunu_yukle():
     except:
         return {}
 
-def bolge_hizi_bul(lat, lon, saat_str):
-    """IBB verisinden koordinata en yakın bölgenin saatlik hızını döndür."""
+@st.cache_data(show_spinner=False)
+def baseline_tablosunu_yukle():
+    try:
+        from ibb_baseline import IBB_BASELINE
+        return IBB_BASELINE
+    except:
+        return {}
+
+# BPR literatür elastisite katsayısı
+# Kaynak: Bureau of Public Roads (1964); Wardrop (1952)
+# Araç sayısı %10 artarsa hız ~%5 düşer → elastisite = -0.5
+BPR_ELASTISITE = -0.5
+
+def bolge_hizi_bul(lat, lon, saat_str, delta_arac=0):
+    """
+    IBB verisinden koordinata en yakın bölgenin saatlik hızını döndür.
+    delta_arac: o bölgedeki araç değişimi (BPR elastisite düzeltmesi için)
+    BPR formülü: yeni_hiz = baz_hiz × (1 + elastisite × delta/baseline)
+    """
     saat_int = int(saat_str.split(":")[0])
     hiz_tablo = hiz_tablosunu_yukle()
+
+    en_yakin_key = None
     en_yakin_mesafe = float("inf")
     baz_hiz = 30.0
     for key, saatlik in hiz_tablo.items():
@@ -92,20 +111,37 @@ def bolge_hizi_bul(lat, lon, saat_str):
         mesafe = abs(b_lat - lat) + abs(b_lon - lon)
         if mesafe < en_yakin_mesafe:
             en_yakin_mesafe = mesafe
+            en_yakin_key = key
             baz_hiz = float(saatlik.get(saat_int, saatlik.get(str(saat_int), 30.0)))
+
+    # BPR elastisite düzeltmesi
+    if delta_arac != 0 and en_yakin_key is not None:
+        baseline_tablo = baseline_tablosunu_yukle()
+        if baseline_tablo and en_yakin_key in baseline_tablo:
+            baseline_arac = baseline_tablo[en_yakin_key].get(saat_int, 100.0)
+            baseline_arac = max(30.0, baseline_arac)  # minimum 30 araç
+            oran = delta_arac / baseline_arac
+            oran = max(-0.5, min(0.5, oran))  # max ±%50 değişim
+            duzeltme = BPR_ELASTISITE * oran
+            baz_hiz = baz_hiz * (1 + duzeltme)
+            baz_hiz = max(5.0, min(120.0, baz_hiz))
+
     return baz_hiz
 
 # ── SÜRE HESABI ──
-def sure_hesapla(guzergah_df, mesai_dict):
+def sure_hesapla(guzergah_df, mesai_dict, delta_araclar=None):
     toplam_sure = 0.0
     toplam_kisi = 0
     detay = []
+    if delta_araclar is None:
+        delta_araclar = {}
     for _, g in guzergah_df.iterrows():
         sirket  = str(g["sirket"])
         saat    = mesai_dict.get(sirket, "08:00")
         ort_lat = (float(g["baslangic_lat"]) + float(g["sirket_lat"])) / 2
         ort_lon = (float(g["baslangic_lon"]) + float(g["sirket_lon"])) / 2
-        hiz_kmh = bolge_hizi_bul(ort_lat, ort_lon, saat)
+        delta   = delta_araclar.get(saat, 0)
+        hiz_kmh = bolge_hizi_bul(ort_lat, ort_lon, saat, delta_arac=delta)
         _, sure_sn = gercek_rota(
             float(g["baslangic_lat"]), float(g["baslangic_lon"]),
             float(g["sirket_lat"]),    float(g["sirket_lon"])
@@ -142,7 +178,9 @@ def cakisma_hesapla(guzergah_df, mesai_dict):
     return toplam, detay_df
 
 # ── OPTİMİZASYON ──
-def guzergah_surelerini_hesapla(guzergah_df):
+def guzergah_surelerini_hesapla(guzergah_df, delta_araclar=None):
+    if delta_araclar is None:
+        delta_araclar = {}
     sureler = {}
     for _, g in guzergah_df.iterrows():
         sirket  = str(g["sirket"])
@@ -155,7 +193,8 @@ def guzergah_surelerini_hesapla(guzergah_df):
         )
         mesafe_km = (sure_sn / 3600) * 80
         for saat in mesai_secenekleri:
-            hiz = bolge_hizi_bul(ort_lat, ort_lon, saat)
+            delta = delta_araclar.get(saat, 0)
+            hiz   = bolge_hizi_bul(ort_lat, ort_lon, saat, delta_arac=delta)
             sureler[(sirket, ilce, saat)] = round((mesafe_km / hiz) * 60 if hiz > 0 else 45.0, 2)
     return sureler
 
@@ -247,9 +286,30 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, m
                     sonuc[s] = saat
         return sonuc
 
-    # IBB hızlarıyla tek optimizasyon
+    # İlk optimizasyon (baz IBB hızlarıyla)
     sureler0 = guzergah_surelerini_hesapla(guzergah_df)
     yeni = tek_optimizasyon(sureler0, "0")
+
+    # BPR yinelemeli düzeltme (2 iterasyon)
+    for iterasyon in range(1, 3):
+        delta_araclar = {saat: 0 for saat in mesai_secenekleri}
+        for _, g in guzergah_df.iterrows():
+            s = str(g["sirket"])
+            eski   = mesai_dict.get(s, "08:00")
+            yeni_s = yeni.get(s, eski)
+            if eski != yeni_s:
+                arac = int(g["calisan_sayisi"])
+                if eski in delta_araclar:
+                    delta_araclar[eski]  -= arac
+                if yeni_s in delta_araclar:
+                    delta_araclar[yeni_s] += arac
+
+        sureler_yeni = guzergah_surelerini_hesapla(guzergah_df, delta_araclar)
+        yeni_iter = tek_optimizasyon(sureler_yeni, str(iterasyon))
+        if yeni_iter == yeni:
+            break
+        yeni = yeni_iter
+
     return yeni
 
 # ── VARSAYILAN VERİ ──
@@ -500,8 +560,19 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     azalma         = (mevcut_skor - yeni_skor) / mevcut_skor * 100 if mevcut_skor > 0 else 0
     kaydirilan     = sum(1 for s in sirketler_s["isim"] if mesai_dict.get(str(s)) != yeni_mesai.get(str(s)))
 
+    # BPR delta hesabı (sonuç gösterimi için)
+    delta_araclar = {saat: 0 for saat in mesai_secenekleri}
+    for _, g in guzergah_s.iterrows():
+        s    = str(g["sirket"])
+        eski = mesai_dict.get(s, "08:00")
+        yeni = yeni_mesai.get(s, eski)
+        if eski != yeni:
+            arac = int(g["calisan_sayisi"])
+            if eski in delta_araclar: delta_araclar[eski] -= arac
+            if yeni in delta_araclar: delta_araclar[yeni] += arac
+
     ort_sure_eski, detay_eski = sure_hesapla(guzergah_s, mesai_dict)
-    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s, yeni_mesai)
+    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s, yeni_mesai, delta_araclar)
     sure_fark = ort_sure_eski - ort_sure_yeni
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
