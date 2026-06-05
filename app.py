@@ -9,7 +9,7 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="İstanbul Trafik Optimizasyonu", layout="wide")
-st.title("İstanbul Trafik Optimizasyonu")
+st.title("🚦 İstanbul Trafik Optimizasyonu")
 st.markdown("Şirket servis güzergahlarını optimize ederek tepe saatteki trafik yükünü azalt.")
 
 mesai_secenekleri = ["07:00","07:30","08:00","08:30","09:00","09:30","10:00"]
@@ -247,10 +247,9 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, m
             for _, g in guzergah_df.iterrows():
                 sirket = str(g["sirket"])
                 kisi   = int(g["calisan_sayisi"])
-                servis = max(1, kisi // 20)
                 if sirket in isimler:
                     for saat in tepe_saatler:
-                        hedef.append(x[sirket, saat] * servis)
+                        hedef.append(x[sirket, saat] * kisi)
 
         elif mod == "uzun_sure":
             # MOD 1: Uzun güzergahlara ağırlık ver
@@ -293,18 +292,17 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, m
     # Yinelemeli elastisite düzeltmesi (2 iterasyon)
     for iterasyon in range(1, 3):
         # Araç kaymasını hesapla
-        SERVIS_KAPASITESI = 20
         delta_araclar = {saat: 0 for saat in mesai_secenekleri}
         for _, g in guzergah_df.iterrows():
             s = str(g["sirket"])
             eski = mesai_dict.get(s, "08:00")
             yeni_s = yeni.get(s, eski)
             if eski != yeni_s:
-                servis_sayisi = max(1, int(g["calisan_sayisi"]) // SERVIS_KAPASITESI)
+                arac = int(g["calisan_sayisi"])
                 if eski in delta_araclar:
-                    delta_araclar[eski] -= servis_sayisi
+                    delta_araclar[eski] -= arac
                 if yeni_s in delta_araclar:
-                    delta_araclar[yeni_s] += servis_sayisi
+                    delta_araclar[yeni_s] += arac
 
         # Yeni hızlarla süreleri güncelle
         sureler_yeni = guzergah_surelerini_hesapla(guzergah_df, delta_araclar)
@@ -380,8 +378,8 @@ VARSAYILAN_GUZERGAHLAR = pd.DataFrame([
 ], columns=["sirket","baslangic_ilce","baslangic_lat","baslangic_lon","calisan_sayisi"])
 
 # ── SIDEBAR ──
-st.sidebar.header("Ayarlar")
-st.sidebar.subheader("Excel Veri Yükle")
+st.sidebar.header("⚙️ Ayarlar")
+st.sidebar.subheader("📂 Excel Veri Yükle")
 yuklenen = st.sidebar.file_uploader("Excel dosyası (.xlsx)", type=["xlsx"])
 
 sirketler   = df_temizle_sirket(VARSAYILAN_SIRKETLER)
@@ -412,18 +410,18 @@ max_sapma = st.sidebar.slider("Max mesai kayması (adım)", 1, 4, 2, help="1 ad�
 min_tepe  = st.sidebar.slider("Tepe saatte min. oran (%)", 5, 40, 15) / 100
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Optimizasyon Modu")
+st.sidebar.subheader("🎯 Optimizasyon Modu")
 opt_mod = st.sidebar.radio(
     "Hedef fonksiyon:",
     options=["uzun_sure", "peak_yuk", "ortalama_sure"],
     format_func=lambda x: {
-        "uzun_sure":      "En uzun süreyi kısalt",
-        "peak_yuk":       "Tepe saatteki araç yükünü azalt",
-        "ortalama_sure":  "Ortalama süreyi kısalt"
+        "uzun_sure":      "⏱ En uzun süreyi kısalt",
+        "peak_yuk":       "🚗 Tepe saatteki araç yükünü azalt",
+        "ortalama_sure":  "📊 Ortalama süreyi kısalt"
     }[x],
 
 )
-with st.sidebar.expander("Modlar hakkında"):
+with st.sidebar.expander("ℹ️ Modlar hakkında"):
     st.markdown("""
 **En uzun süreyi kısalt:** Mevcut süresi uzun olan güzergahlara daha yüksek ağırlık verir. 2 saatlik yol, 30 dakikalık yoldan çok daha önceliklidir.
 
@@ -442,17 +440,17 @@ sirket_renk = {str(r["isim"]): RENKLER[i % len(RENKLER)]
 col1, col2 = st.columns([3, 2])
 
 with col2:
-    st.subheader("Şirketler")
+    st.subheader("📋 Şirketler")
     st.dataframe(sirketler[["isim","mevcut_mesai","sabit"]], use_container_width=True, hide_index=True)
 
     ozet = guzergahlar.groupby("sirket").agg(
         guzergah=("baslangic_ilce","count"),
         calisan=("calisan_sayisi","sum")
     ).reset_index()
-    st.subheader("Güzergah Özeti")
+    st.subheader("🚌 Güzergah Özeti")
     st.dataframe(ozet, use_container_width=True, hide_index=True)
 
-    if st.button("Optimizasyonu Çalıştır", use_container_width=True, type="primary"):
+    if st.button("🚀 Optimizasyonu Çalıştır", use_container_width=True, type="primary"):
         with st.spinner("Hesaplanıyor..."):
             yeni_mesai = optimizasyon_calistir(sirketler, guzergahlar, max_sapma, min_tepe, opt_mod)
             st.session_state["yeni_mesai"]  = yeni_mesai
@@ -460,7 +458,7 @@ with col2:
             st.session_state["guzergahlar"] = guzergahlar
 
 with col1:
-    st.subheader("Harita")
+    st.subheader("🗺️ Harita")
     yeni_mesai = st.session_state.get("yeni_mesai", {})
 
     m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
@@ -500,8 +498,8 @@ with col1:
                 tooltip_text = (
                     f"<b>{sirket_adi}</b><br>"
                     f"{str(g['baslangic_ilce'])} → {sirket_adi}<br>"
-                    f"Mesafe: {round(mesafe_km,1)} km<br>"
-                    f"Mevcut ({eski_saat}): {sure} dk"
+                    f"📏 Mesafe: {round(mesafe_km,1)} km<br>"
+                    f"⏱ Mevcut ({eski_saat}): {sure} dk"
                 )
 
             folium.PolyLine(
@@ -546,11 +544,11 @@ with col1:
 if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     st.markdown("---")
     mod_labels = {
-        "uzun_sure":     "En Uzun Süreyi Kısalt",
-        "peak_yuk":      "Tepe Saatteki Araç Yükünü Azalt",
-        "ortalama_sure": "Ortalama Süreyi Kısalt"
+        "uzun_sure":     "⏱ En Uzun Süreyi Kısalt",
+        "peak_yuk":      "🚗 Tepe Saatteki Araç Yükünü Azalt",
+        "ortalama_sure": "📊 Ortalama Süreyi Kısalt"
     }
-    st.subheader(f"Optimizasyon Sonuçları — {mod_labels.get(opt_mod, '')}"  )
+    st.subheader(f"📊 Optimizasyon Sonuçları — {mod_labels.get(opt_mod, '')}"  )
 
     yeni_mesai  = st.session_state["yeni_mesai"]
     sirketler_s = df_temizle_sirket(st.session_state["sirketler"])
@@ -559,18 +557,17 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     mesai_dict  = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_s.iterrows()}
 
     # Elastisite ile düzeltilmiş delta
-    SERVIS_KAPASITESI = 20
     delta_araclar = {saat: 0 for saat in mesai_secenekleri}
     for _, g in guzergah_s.iterrows():
         s = str(g["sirket"])
         eski = mesai_dict.get(s, "08:00")
         yeni = yeni_mesai.get(s, eski)
         if eski != yeni:
-            servis_sayisi = max(1, int(g["calisan_sayisi"]) // SERVIS_KAPASITESI)
+            arac = int(g["calisan_sayisi"])
             if eski in delta_araclar:
-                delta_araclar[eski] -= servis_sayisi
+                delta_araclar[eski] -= arac
             if yeni in delta_araclar:
-                delta_araclar[yeni] += servis_sayisi
+                delta_araclar[yeni] += arac
 
     mevcut_skor, _ = cakisma_hesapla(guzergah_s, mesai_dict)
     yeni_skor,   _ = cakisma_hesapla(guzergah_s, yeni_mesai)
@@ -605,7 +602,7 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
         })
     st.dataframe(pd.DataFrame(sonuc_rows), use_container_width=True, hide_index=True)
 
-    with st.expander("Güzergah Bazlı Süre Detayı"):
+    with st.expander("🕐 Güzergah Bazlı Süre Detayı"):
         cx, cy = st.columns(2)
         with cx:
             st.markdown("**Önce (mevcut mesai):**")
