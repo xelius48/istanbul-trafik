@@ -7,6 +7,8 @@ from streamlit_folium import st_folium
 from pulp import *
 from collections import defaultdict
 import matplotlib.pyplot as plt
+import re
+import datetime
 
 st.set_page_config(page_title="İstanbul Trafik Optimizasyonu", layout="wide")
 st.title("🚦 İstanbul Trafik Optimizasyonu")
@@ -21,10 +23,19 @@ RENKLER = ["#E63946","#2196F3","#4CAF50","#FF9800","#9C27B0",
 
 # ── VERİ TEMİZLEME ──
 def mesai_formatla(deger):
+    if pd.isna(deger):
+        return "08:00"
+    
+    # Eğer datetime/time nesnesi ise
+    if hasattr(deger, "hour") and hasattr(deger, "minute"):
+        return f"{str(deger.hour).zfill(2)}:{str(deger.minute).zfill(2)}"
+        
     s = str(deger).strip()
-    parcalar = s.split(":")
-    if len(parcalar) >= 2:
-        return f"{parcalar[0].zfill(2)}:{parcalar[1].zfill(2)}"
+    # Regex ile HH:MM formatını ara
+    match = re.search(r"(\d{1,2}):(\d{2})", s)
+    if match:
+        return f"{match.group(1).zfill(2)}:{match.group(2)}"
+        
     return "08:00"
 
 def df_temizle_sirket(df):
@@ -68,6 +79,32 @@ def gercek_rota(lat1, lon1, lat2, lon2):
     except:
         return [[lat1, lon1], [lat2, lon2]], 1800.0
 
+def guzergah_rotalarini_ekle(guzergah_df, sirket_df):
+    d = guzergaha_sirket_konum_ekle(guzergah_df, sirket_df)
+    coords_list = []
+    durations_list = []
+    
+    bar = st.progress(0)
+    status_text = st.empty()
+    total = len(d)
+    
+    status_text.text("Rotalar OSRM sunucusundan çekiliyor...")
+    for idx, row in d.iterrows():
+        coords, duration = gercek_rota(
+            float(row["baslangic_lat"]), float(row["baslangic_lon"]),
+            float(row["sirket_lat"]),    float(row["sirket_lon"])
+        )
+        coords_list.append(coords)
+        durations_list.append(duration)
+        bar.progress(min(1.0, (idx + 1) / total))
+        
+    bar.empty()
+    status_text.empty()
+    
+    d["route_coords"] = coords_list
+    d["base_duration"] = durations_list
+    return d
+
 # ── IBB HIZ TABLOSU ──
 @st.cache_data(show_spinner=False)
 def hiz_tablosunu_yukle():
@@ -105,10 +142,10 @@ def sure_hesapla(guzergah_df, mesai_dict):
         ort_lat = (float(g["baslangic_lat"]) + float(g["sirket_lat"])) / 2
         ort_lon = (float(g["baslangic_lon"]) + float(g["sirket_lon"])) / 2
         hiz_kmh = bolge_hizi_bul(ort_lat, ort_lon, saat)
-        _, sure_sn = gercek_rota(
-            float(g["baslangic_lat"]), float(g["baslangic_lon"]),
-            float(g["sirket_lat"]),    float(g["sirket_lon"])
-        )
+        
+        # OSRM çağrısı yerine DataFrame'den oku!
+        sure_sn = float(g["base_duration"])
+        
         mesafe_km   = (sure_sn / 3600) * 80
         gercek_sure = (mesafe_km / hiz_kmh) * 60 if hiz_kmh > 0 else 45.0
         kisi = int(g["calisan_sayisi"])
@@ -148,17 +185,17 @@ def guzergah_surelerini_hesapla(guzergah_df):
         ilce    = str(g["baslangic_ilce"])
         ort_lat = (float(g["baslangic_lat"]) + float(g["sirket_lat"])) / 2
         ort_lon = (float(g["baslangic_lon"]) + float(g["sirket_lon"])) / 2
-        _, sure_sn = gercek_rota(
-            float(g["baslangic_lat"]), float(g["baslangic_lon"]),
-            float(g["sirket_lat"]),    float(g["sirket_lon"])
-        )
+        
+        # OSRM çağrısı yerine DataFrame'den oku!
+        sure_sn = float(g["base_duration"])
+        
         mesafe_km = (sure_sn / 3600) * 80
         for saat in mesai_secenekleri:
             hiz = bolge_hizi_bul(ort_lat, ort_lon, saat)
             sureler[(sirket, ilce, saat)] = round((mesafe_km / hiz) * 60 if hiz > 0 else 45.0, 2)
     return sureler
 
-def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, mod):
+def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, max_saatlik_oran, mod):
     mesai_dict = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_df.iterrows()}
     sabit_list = [str(r["isim"]) for _, r in sirketler_df.iterrows() if r["sabit"]]
     isimler    = [str(r["isim"]) for _, r in sirketler_df.iterrows()]
@@ -199,13 +236,13 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, m
         if m in mesai_secenekleri:
             prob += x[s, m] == 1
 
-    # Kısıt 4: Tepe saatte min yük
+    # Kısıt 4: Saatlik maksimum kapasite sınırı
     toplam_cal = int(guzergah_df["calisan_sayisi"].sum())
-    for tepe_saat in ["08:00","08:30","09:00"]:
+    for saat in mesai_secenekleri:
         prob += lpSum(
-            x[s, tepe_saat] * int(guzergah_df[guzergah_df["sirket"]==s]["calisan_sayisi"].sum())
+            x[s, saat] * int(guzergah_df[guzergah_df["sirket"]==s]["calisan_sayisi"].sum())
             for s in isimler
-        ) >= toplam_cal * min_tepe_oran
+        ) <= toplam_cal * max_saatlik_oran
 
     # ── HEDEF FONKSİYON (moda göre) ──
     hedef = []
@@ -248,14 +285,15 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, m
                     hedef.append(x[s, saat] * kisi * sure)
 
     prob += lpSum(hedef)
-    prob.solve(PULP_CBC_CMD(msg=0))
+    status = prob.solve(PULP_CBC_CMD(msg=0))
 
     yeni = {}
-    for s in isimler:
-        for saat in mesai_secenekleri:
-            if value(x[s, saat]) == 1:
-                yeni[s] = saat
-    return yeni
+    if status == LpStatusOptimal:
+        for s in isimler:
+            for saat in mesai_secenekleri:
+                if value(x[s, saat]) == 1:
+                    yeni[s] = saat
+    return yeni, status
 
 # ── VARSAYILAN VERİ ──
 VARSAYILAN_SIRKETLER = pd.DataFrame([
@@ -325,20 +363,49 @@ st.sidebar.header("⚙️ Ayarlar")
 st.sidebar.subheader("📂 Excel Veri Yükle")
 yuklenen = st.sidebar.file_uploader("Excel dosyası (.xlsx)", type=["xlsx"])
 
-sirketler   = df_temizle_sirket(VARSAYILAN_SIRKETLER)
-guzergahlar = df_temizle_guzergah(VARSAYILAN_GUZERGAHLAR)
+# Dosya yükleme state yönetimi
+dosya_adi = yuklenen.name if yuklenen else None
+eski_dosya = st.session_state.get("dosya_adi", None)
 
+# Eğer sayfa ilk defa açılıyorsa veya dosya değiştiyse
+if dosya_adi != eski_dosya or "sirketler" not in st.session_state or "guzergahlar" not in st.session_state:
+    st.session_state["dosya_adi"] = dosya_adi
+    if "yeni_mesai" in st.session_state:
+        del st.session_state["yeni_mesai"]
+    if "opt_status" in st.session_state:
+        del st.session_state["opt_status"]
+        
+    if yuklenen:
+        try:
+            xl = pd.ExcelFile(yuklenen)
+            if "sirketler" in xl.sheet_names and "guzergahlar" in xl.sheet_names:
+                sirketler_clean = df_temizle_sirket(xl.parse("sirketler"))
+                guzergahlar_clean = df_temizle_guzergah(xl.parse("guzergahlar"))
+                
+                st.session_state["sirketler"] = sirketler_clean
+                st.session_state["guzergahlar"] = guzergah_rotalarini_ekle(guzergahlar_clean, sirketler_clean)
+                st.session_state["excel_basarili"] = True
+                st.session_state["excel_mesaj"] = f"✅ {len(sirketler_clean)} şirket, {len(guzergahlar_clean)} güzergah yüklendi!"
+            else:
+                st.session_state["excel_basarili"] = False
+                st.session_state["excel_mesaj"] = "❌ 'sirketler' ve 'guzergahlar' sayfaları gerekli!"
+                st.session_state["sirketler"] = df_temizle_sirket(VARSAYILAN_SIRKETLER)
+                st.session_state["guzergahlar"] = guzergah_rotalarini_ekle(df_temizle_guzergah(VARSAYILAN_GUZERGAHLAR), st.session_state["sirketler"])
+        except Exception as e:
+            st.session_state["excel_basarili"] = False
+            st.session_state["excel_mesaj"] = f"Hata: {e}"
+            st.session_state["sirketler"] = df_temizle_sirket(VARSAYILAN_SIRKETLER)
+            st.session_state["guzergahlar"] = guzergah_rotalarini_ekle(df_temizle_guzergah(VARSAYILAN_GUZERGAHLAR), st.session_state["sirketler"])
+    else:
+        st.session_state["sirketler"] = df_temizle_sirket(VARSAYILAN_SIRKETLER)
+        st.session_state["guzergahlar"] = guzergah_rotalarini_ekle(df_temizle_guzergah(VARSAYILAN_GUZERGAHLAR), st.session_state["sirketler"])
+
+# Sidebar mesajları
 if yuklenen:
-    try:
-        xl = pd.ExcelFile(yuklenen)
-        if "sirketler" in xl.sheet_names and "guzergahlar" in xl.sheet_names:
-            sirketler   = df_temizle_sirket(xl.parse("sirketler"))
-            guzergahlar = df_temizle_guzergah(xl.parse("guzergahlar"))
-            st.sidebar.success(f"✅ {len(sirketler)} şirket, {len(guzergahlar)} güzergah yüklendi!")
-        else:
-            st.sidebar.error("❌ 'sirketler' ve 'guzergahlar' sayfaları gerekli!")
-    except Exception as e:
-        st.sidebar.error(f"Hata: {e}")
+    if st.session_state.get("excel_basarili", False):
+        st.sidebar.success(st.session_state["excel_mesaj"])
+    else:
+        st.sidebar.error(st.session_state["excel_mesaj"])
 else:
     st.sidebar.info("Varsayılan 15 şirket kullanılıyor.")
 
@@ -350,7 +417,7 @@ with st.sidebar.expander("📋 Excel formatı"):
     """)
 
 max_sapma = st.sidebar.slider("Max mesai kayması (adım)", 1, 4, 2, help="1 adım = 30 dk")
-min_tepe  = st.sidebar.slider("Tepe saatte min. oran (%)", 5, 40, 15) / 100
+max_saatlik_oran = st.sidebar.slider("Saatlik maks. çalışan kapasitesi (%)", 10, 50, 25, help="Hiçbir saat diliminde toplam çalışanların bu oranından fazlası işe başlamasın.") / 100
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Optimizasyon Modu")
@@ -364,7 +431,8 @@ opt_mod = st.sidebar.radio(
     }[x]
 )
 
-guzergahlar = guzergaha_sirket_konum_ekle(guzergahlar, sirketler)
+sirketler = st.session_state["sirketler"]
+guzergahlar = st.session_state["guzergahlar"]
 sirket_renk = {str(r["isim"]): RENKLER[i % len(RENKLER)]
                for i, (_, r) in enumerate(sirketler.iterrows())}
 
@@ -384,13 +452,25 @@ with col2:
 
     if st.button("🚀 Optimizasyonu Çalıştır", use_container_width=True, type="primary"):
         with st.spinner("Hesaplanıyor..."):
-            yeni_mesai = optimizasyon_calistir(sirketler, guzergahlar, max_sapma, min_tepe, opt_mod)
-            st.session_state["yeni_mesai"]  = yeni_mesai
-            st.session_state["sirketler"]   = sirketler
-            st.session_state["guzergahlar"] = guzergahlar
+            yeni_mesai, status = optimizasyon_calistir(sirketler, guzergahlar, max_sapma, max_saatlik_oran, opt_mod)
+            if status == LpStatusOptimal:
+                st.session_state["yeni_mesai"]  = yeni_mesai
+                st.session_state["sirketler"]   = sirketler
+                st.session_state["guzergahlar"] = guzergahlar
+                st.session_state["opt_status"]  = "Optimal"
+            else:
+                st.session_state["opt_status"]  = LpStatus[status]
+                if "yeni_mesai" in st.session_state:
+                    del st.session_state["yeni_mesai"]
 
 with col1:
     st.subheader("🗺️ Harita")
+    
+    # Solver hata durumunu göster
+    opt_status = st.session_state.get("opt_status", None)
+    if opt_status and opt_status != "Optimal":
+        st.error(f"❌ Optimizasyon çözülemedi (Durum: {opt_status})! Lütfen kısıtlamaları (Max sapma veya Saatlik maks. çalışan kapasitesi) esnetip tekrar deneyin.")
+        
     yeni_mesai = st.session_state.get("yeni_mesai", {})
     m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
 
@@ -399,10 +479,11 @@ with col1:
         if sirket_adi not in sirketler["isim"].values:
             continue
         s_row = sirketler[sirketler["isim"] == sirket_adi].iloc[0]
-        koordinatlar, sure_sn = gercek_rota(
-            float(g["baslangic_lat"]), float(g["baslangic_lon"]),
-            float(s_row["lat"]),       float(s_row["lon"])
-        )
+        
+        # OSRM çağrısı yerine DataFrame'den oku!
+        koordinatlar = g["route_coords"]
+        sure_sn = float(g["base_duration"])
+        
         mesafe_km = (sure_sn / 3600) * 80
         ort_lat   = (float(g["baslangic_lat"]) + float(s_row["lat"])) / 2
         ort_lon   = (float(g["baslangic_lon"]) + float(s_row["lon"])) / 2
@@ -482,8 +563,7 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
 
     yeni_mesai  = st.session_state["yeni_mesai"]
     sirketler_s = df_temizle_sirket(st.session_state["sirketler"])
-    guzergah_s  = df_temizle_guzergah(st.session_state["guzergahlar"])
-    guzergah_s  = guzergaha_sirket_konum_ekle(guzergah_s, sirketler_s)
+    guzergah_s  = st.session_state["guzergahlar"]
     mesai_dict  = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_s.iterrows()}
 
     mevcut_skor, _ = cakisma_hesapla(guzergah_s, mesai_dict)
