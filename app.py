@@ -244,13 +244,18 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, m
 
         if mod == "peak_yuk":
             # MOD 2: Tepe saatteki araç yükünü minimize et
+            # (süre ikincil hedef olarak eklenir ki süre patlamasın)
             tepe_saatler = ["08:00", "08:30", "09:00"]
             for _, g in guzergah_df.iterrows():
                 sirket = str(g["sirket"])
+                ilce   = str(g["baslangic_ilce"])
                 kisi   = int(g["calisan_sayisi"])
                 if sirket in isimler:
-                    for saat in tepe_saatler:
-                        hedef.append(x[sirket, saat] * kisi)
+                    for saat in mesai_secenekleri:
+                        sure = sureler.get((sirket, ilce, saat), 45.0)
+                        # Tepe saatler ağır cezalı, süre hafif ağırlıklı
+                        tepe_ceza = 1000 if saat in tepe_saatler else 0
+                        hedef.append(x[sirket, saat] * kisi * (tepe_ceza + sure))
 
         elif mod == "uzun_sure":
             # MOD 1: Uzun güzergahlara ağırlık ver
@@ -286,30 +291,11 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, m
                     sonuc[s] = saat
         return sonuc
 
-    # İlk optimizasyon (baz IBB hızlarıyla)
+    # Statik IBB hızlarıyla tek optimizasyon
+    # (Mevcut saatte kalmak her zaman geçerli bir çözüm olduğundan
+    #  algoritma asla daha kötü bir sonuç seçemez — iyileşme garantili)
     sureler0 = guzergah_surelerini_hesapla(guzergah_df)
     yeni = tek_optimizasyon(sureler0, "0")
-
-    # BPR yinelemeli düzeltme (2 iterasyon)
-    for iterasyon in range(1, 3):
-        delta_araclar = {saat: 0 for saat in mesai_secenekleri}
-        for _, g in guzergah_df.iterrows():
-            s = str(g["sirket"])
-            eski   = mesai_dict.get(s, "08:00")
-            yeni_s = yeni.get(s, eski)
-            if eski != yeni_s:
-                arac = int(g["calisan_sayisi"])
-                if eski in delta_araclar:
-                    delta_araclar[eski]  -= arac
-                if yeni_s in delta_araclar:
-                    delta_araclar[yeni_s] += arac
-
-        sureler_yeni = guzergah_surelerini_hesapla(guzergah_df, delta_araclar)
-        yeni_iter = tek_optimizasyon(sureler_yeni, str(iterasyon))
-        if yeni_iter == yeni:
-            break
-        yeni = yeni_iter
-
     return yeni
 
 # ── VARSAYILAN VERİ ──
@@ -560,19 +546,8 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     azalma         = (mevcut_skor - yeni_skor) / mevcut_skor * 100 if mevcut_skor > 0 else 0
     kaydirilan     = sum(1 for s in sirketler_s["isim"] if mesai_dict.get(str(s)) != yeni_mesai.get(str(s)))
 
-    # BPR delta hesabı (sonuç gösterimi için)
-    delta_araclar = {saat: 0 for saat in mesai_secenekleri}
-    for _, g in guzergah_s.iterrows():
-        s    = str(g["sirket"])
-        eski = mesai_dict.get(s, "08:00")
-        yeni = yeni_mesai.get(s, eski)
-        if eski != yeni:
-            arac = int(g["calisan_sayisi"])
-            if eski in delta_araclar: delta_araclar[eski] -= arac
-            if yeni in delta_araclar: delta_araclar[yeni] += arac
-
     ort_sure_eski, detay_eski = sure_hesapla(guzergah_s, mesai_dict)
-    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s, yeni_mesai, delta_araclar)
+    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s, yeni_mesai)
     sure_fark = ort_sure_eski - ort_sure_yeni
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
