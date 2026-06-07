@@ -581,8 +581,21 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     azalma         = (mevcut_skor - yeni_skor) / mevcut_skor * 100 if mevcut_skor > 0 else 0
     kaydirilan     = sum(1 for s in sirketler_s["isim"] if mesai_dict.get(str(s)) != yeni_mesai.get(str(s)))
 
+    # Eski süre: statik IBB hızı (elastisite yok — mevcut gerçek durum)
     ort_sure_eski, detay_eski = sure_hesapla(guzergah_s, mesai_dict)
-    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s, yeni_mesai)
+
+    # Yeni süre: optimize sonrası araç kaymalarının elastisite etkisiyle
+    delta_sonu = {saat: 0 for saat in mesai_secenekleri}
+    for _, g in guzergah_s.iterrows():
+        s    = str(g["sirket"])
+        eski = mesai_dict.get(s, "08:00")
+        yeni = yeni_mesai.get(s, eski)
+        if eski != yeni:
+            arac = int(g["calisan_sayisi"])
+            if eski in delta_sonu: delta_sonu[eski]  -= arac
+            if yeni in delta_sonu: delta_sonu[yeni]  += arac
+
+    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s, yeni_mesai, delta_sonu)
     sure_fark = ort_sure_eski - ort_sure_yeni
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
