@@ -11,7 +11,7 @@ import re
 import datetime
 
 st.set_page_config(page_title="İstanbul Trafik Optimizasyonu", layout="wide")
-st.title("🚦 İstanbul Trafik Optimizasyonu")
+st.title("İstanbul Trafik Optimizasyonu")
 st.markdown("Şirket mesai saatlerini optimize ederek İstanbul'daki trafik yükünü azalt.")
 
 # ── SABİTLER ──
@@ -359,8 +359,8 @@ VARSAYILAN_GUZERGAHLAR = pd.DataFrame([
 ], columns=["sirket","baslangic_ilce","baslangic_lat","baslangic_lon","calisan_sayisi"])
 
 # ── SIDEBAR ──
-st.sidebar.header("⚙️ Ayarlar")
-st.sidebar.subheader("📂 Excel Veri Yükle")
+st.sidebar.header("Ayarlar")
+st.sidebar.subheader("Excel Veri Yükle")
 yuklenen = st.sidebar.file_uploader("Excel dosyası (.xlsx)", type=["xlsx"])
 
 # Dosya yükleme state yönetimi
@@ -385,10 +385,10 @@ if dosya_adi != eski_dosya or "sirketler" not in st.session_state or "guzergahla
                 st.session_state["sirketler"] = sirketler_clean
                 st.session_state["guzergahlar"] = guzergah_rotalarini_ekle(guzergahlar_clean, sirketler_clean)
                 st.session_state["excel_basarili"] = True
-                st.session_state["excel_mesaj"] = f"✅ {len(sirketler_clean)} şirket, {len(guzergahlar_clean)} güzergah yüklendi!"
+                st.session_state["excel_mesaj"] = f"{len(sirketler_clean)} şirket, {len(guzergahlar_clean)} güzergah yüklendi!"
             else:
                 st.session_state["excel_basarili"] = False
-                st.session_state["excel_mesaj"] = "❌ 'sirketler' ve 'guzergahlar' sayfaları gerekli!"
+                st.session_state["excel_mesaj"] = "'sirketler' ve 'guzergahlar' sayfaları gerekli!"
                 st.session_state["sirketler"] = df_temizle_sirket(VARSAYILAN_SIRKETLER)
                 st.session_state["guzergahlar"] = guzergah_rotalarini_ekle(df_temizle_guzergah(VARSAYILAN_GUZERGAHLAR), st.session_state["sirketler"])
         except Exception as e:
@@ -409,7 +409,7 @@ if yuklenen:
 else:
     st.sidebar.info("Varsayılan 15 şirket kullanılıyor.")
 
-with st.sidebar.expander("📋 Excel formatı"):
+with st.sidebar.expander("Excel Formatı"):
     st.markdown("""
 **sirketler sayfası:** isim, lat, lon, mevcut_mesai, sabit
 
@@ -420,14 +420,14 @@ max_sapma = st.sidebar.slider("Max mesai kayması (adım)", 1, 4, 2, help="1 ad�
 max_saatlik_oran = st.sidebar.slider("Saatlik maks. çalışan kapasitesi (%)", 10, 50, 25, help="Hiçbir saat diliminde toplam çalışanların bu oranından fazlası işe başlamasın.") / 100
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 Optimizasyon Modu")
+st.sidebar.subheader("Optimizasyon Modu")
 opt_mod = st.sidebar.radio(
     "Hedef fonksiyon:",
     options=["uzun_sure", "peak_yuk", "ortalama_sure"],
     format_func=lambda x: {
-        "uzun_sure":     "⏱ En uzun süreyi kısalt",
-        "peak_yuk":      "🚗 Tepe saatteki yükü azalt",
-        "ortalama_sure": "📊 Ortalama süreyi kısalt"
+        "uzun_sure":     "En uzun süreyi kısalt",
+        "peak_yuk":      "Tepe saatteki yükü azalt",
+        "ortalama_sure": "Ortalama süreyi kısalt"
     }[x]
 )
 
@@ -440,17 +440,17 @@ sirket_renk = {str(r["isim"]): RENKLER[i % len(RENKLER)]
 col1, col2 = st.columns([3, 2])
 
 with col2:
-    st.subheader("📋 Şirketler")
+    st.subheader("Şirketler")
     st.dataframe(sirketler[["isim","mevcut_mesai","sabit"]], use_container_width=True, hide_index=True)
 
     ozet = guzergahlar.groupby("sirket").agg(
         guzergah=("baslangic_ilce","count"),
         calisan=("calisan_sayisi","sum")
     ).reset_index()
-    st.subheader("🚌 Güzergah Özeti")
+    st.subheader("Güzergah Özeti")
     st.dataframe(ozet, use_container_width=True, hide_index=True)
 
-    if st.button("🚀 Optimizasyonu Çalıştır", use_container_width=True, type="primary"):
+    if st.button("Optimizasyonu Çalıştır", use_container_width=True, type="primary"):
         with st.spinner("Hesaplanıyor..."):
             yeni_mesai, status = optimizasyon_calistir(sirketler, guzergahlar, max_sapma, max_saatlik_oran, opt_mod)
             if status == LpStatusOptimal:
@@ -464,12 +464,12 @@ with col2:
                     del st.session_state["yeni_mesai"]
 
 with col1:
-    st.subheader("🗺️ Harita")
+    st.subheader("Harita")
     
     # Solver hata durumunu göster
     opt_status = st.session_state.get("opt_status", None)
     if opt_status and opt_status != "Optimal":
-        st.error(f"❌ Optimizasyon çözülemedi (Durum: {opt_status})! Lütfen kısıtlamaları (Max sapma veya Saatlik maks. çalışan kapasitesi) esnetip tekrar deneyin.")
+        st.error(f"Optimizasyon çözülemedi (Durum: {opt_status})! Lütfen kısıtlamaları (Max sapma veya Saatlik maks. çalışan kapasitesi) esnetip tekrar deneyin.")
         
     yeni_mesai = st.session_state.get("yeni_mesai", {})
     m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
@@ -496,7 +496,7 @@ with col1:
             sure_eski = round((mesafe_km / hiz_eski) * 60, 1) if hiz_eski > 0 else 0
             sure_yeni = round((mesafe_km / hiz_yeni) * 60, 1) if hiz_yeni > 0 else 0
             fark      = round(sure_eski - sure_yeni, 1)
-            fark_str  = f"✅ {fark} dk kazanıldı" if fark > 0 else ("— Aynı" if fark == 0 else f"⚠️ {abs(fark)} dk arttı")
+            fark_str  = f"{fark} dk kazanıldı" if fark > 0 else ("— Aynı" if fark == 0 else f"{abs(fark)} dk arttı")
             tooltip_text = (
                 f"<b>{sirket_adi}</b><br>"
                 f"{str(g['baslangic_ilce'])} → {sirket_adi}<br>"
@@ -547,7 +547,7 @@ with col1:
             fill=True, fill_opacity=0.9,
             popup=folium.Popup(
                 f"<b>{isim}</b><br>Eski: {eski}<br>Yeni: {yeni}<br>"
-                f"{'✅ Kaydırıldı' if degisti else '— Değişmedi'}",
+                f"{'Kaydırıldı' if degisti else '— Değişmedi'}",
                 max_width=220)
         ).add_to(m)
 
@@ -556,10 +556,10 @@ with col1:
 # ── SONUÇLAR ──
 if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     st.markdown("---")
-    mod_label = {"uzun_sure":"⏱ En Uzun Süreyi Kısalt",
-                 "peak_yuk":"🚗 Tepe Saatteki Yükü Azalt",
-                 "ortalama_sure":"📊 Ortalama Süreyi Kısalt"}
-    st.subheader(f"📊 Optimizasyon Sonuçları — {mod_label.get(opt_mod,'')}")
+    mod_label = {"uzun_sure":"En Uzun Süreyi Kısalt",
+                 "peak_yuk":"Tepe Saatteki Yükü Azalt",
+                 "ortalama_sure":"Ortalama Süreyi Kısalt"}
+    st.subheader(f"Optimizasyon Sonuçları — {mod_label.get(opt_mod,'')}")
 
     yeni_mesai  = st.session_state["yeni_mesai"]
     sirketler_s = df_temizle_sirket(st.session_state["sirketler"])
@@ -595,11 +595,11 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
             "Yeni":      yeni,
             "Güzergah":  len(guz),
             "Çalışan":   int(guz["calisan_sayisi"].sum()),
-            "Durum":     "✅ Kaydırıldı" if eski != yeni else "— Aynı"
+            "Durum":     "Kaydırıldı" if eski != yeni else "— Aynı"
         })
     st.dataframe(pd.DataFrame(sonuc_rows), use_container_width=True, hide_index=True)
 
-    with st.expander("🕐 Güzergah Bazlı Süre Detayı"):
+    with st.expander("Güzergah Bazlı Süre Detayı"):
         cx, cy = st.columns(2)
         with cx:
             st.markdown("**Önce (mevcut mesai):**")
