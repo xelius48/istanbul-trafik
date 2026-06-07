@@ -12,7 +12,7 @@ st.set_page_config(page_title="İstanbul Trafik Optimizasyonu", layout="wide")
 st.title("🚦 İstanbul Trafik Optimizasyonu")
 st.markdown("Şirket servis güzergahlarını optimize ederek tepe saatteki trafik yükünü azalt.")
 
-mesai_secenekleri = ["07:00","07:30","08:00","08:30","09:00","09:30","10:00"]
+mesai_secenekleri = ["06:00","06:30","07:00","07:30","08:00","08:30","09:00","09:30","10:00"]
 mesai_indeks      = {s: i for i, s in enumerate(mesai_secenekleri)}
 
 RENKLER = ["#E63946","#2196F3","#4CAF50","#FF9800","#9C27B0",
@@ -86,16 +86,16 @@ def baseline_tablosunu_yukle():
     except:
         return {}
 
-# BPR literatür elastisite katsayısı
+# BPR elastisite: araç %1 azalırsa hız %0.5 artar
 # Kaynak: Bureau of Public Roads (1964); Wardrop (1952)
-# Araç sayısı %10 artarsa hız ~%5 düşer → elastisite = -0.5
-BPR_ELASTISITE = -0.5
+BPR_ELASTISITE = 0.5  # pozitif değer — aşağıda formülde işaret yönetilir
 
 def bolge_hizi_bul(lat, lon, saat_str, delta_arac=0):
     """
     IBB verisinden koordinata en yakın bölgenin saatlik hızını döndür.
-    delta_arac: o bölgedeki araç değişimi (BPR elastisite düzeltmesi için)
-    BPR formülü: yeni_hiz = baz_hiz × (1 + elastisite × delta/baseline)
+    delta_arac: araç değişimi (negatif=azaldı → hız artar, pozitif=arttı → hız düşer)
+    Formül: yeni_hiz = baz_hiz × (1 - ELASTISITE × (delta/baseline))
+    Örnek: delta=-20, baseline=100 → pct=-0.2 → faktor=1+0.5×0.2=1.1 → %10 hızlanır
     """
     saat_int = int(saat_str.split(":")[0])
     hiz_tablo = hiz_tablosunu_yukle()
@@ -114,17 +114,18 @@ def bolge_hizi_bul(lat, lon, saat_str, delta_arac=0):
             en_yakin_key = key
             baz_hiz = float(saatlik.get(saat_int, saatlik.get(str(saat_int), 30.0)))
 
-    # BPR elastisite düzeltmesi
+    # BPR düzeltmesi (sadece optimizasyon sırasında çağrılır)
     if delta_arac != 0 and en_yakin_key is not None:
         baseline_tablo = baseline_tablosunu_yukle()
         if baseline_tablo and en_yakin_key in baseline_tablo:
-            baseline_arac = baseline_tablo[en_yakin_key].get(saat_int, 100.0)
-            baseline_arac = max(30.0, baseline_arac)  # minimum 30 araç
-            oran = delta_arac / baseline_arac
-            oran = max(-0.5, min(0.5, oran))  # max ±%50 değişim
-            duzeltme = BPR_ELASTISITE * oran
-            baz_hiz = baz_hiz * (1 + duzeltme)
-            baz_hiz = max(5.0, min(120.0, baz_hiz))
+            baseline_arac = float(baseline_tablo[en_yakin_key].get(saat_int, 100.0))
+            baseline_arac = max(50.0, baseline_arac)  # min 50 araç
+            pct = delta_arac / baseline_arac
+            pct = max(-0.4, min(0.4, pct))  # max ±%40 etki
+            # delta negatif → pct negatif → -ELASTISITE × pct pozitif → hız artar ✓
+            # delta pozitif → pct pozitif → -ELASTISITE × pct negatif → hız düşer ✓
+            faktor = 1.0 - BPR_ELASTISITE * pct
+            baz_hiz = max(5.0, min(120.0, baz_hiz * faktor))
 
     return baz_hiz
 
@@ -291,11 +292,45 @@ def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, min_tepe_oran, m
                     sonuc[s] = saat
         return sonuc
 
-    # Statik IBB hızlarıyla tek optimizasyon
-    # (Mevcut saatte kalmak her zaman geçerli bir çözüm olduğundan
-    #  algoritma asla daha kötü bir sonuç seçemez — iyileşme garantili)
+    # 1. Statik IBB hızlarıyla ilk optimizasyon
     sureler0 = guzergah_surelerini_hesapla(guzergah_df)
     yeni = tek_optimizasyon(sureler0, "0")
+
+    # 2. BPR geri besleme: kaydırılan araçların hıza etkisini hesapla
+    #    ve tekrar optimize et (max 2 iterasyon)
+    for iterasyon in range(1, 3):
+        delta_araclar = {saat: 0 for saat in mesai_secenekleri}
+        for _, g in guzergah_df.iterrows():
+            s      = str(g["sirket"])
+            eski   = mesai_dict.get(s, "08:00")
+            yeni_s = yeni.get(s, eski)
+            if eski != yeni_s:
+                arac = int(g["calisan_sayisi"])
+                if eski  in delta_araclar: delta_araclar[eski]  -= arac
+                if yeni_s in delta_araclar: delta_araclar[yeni_s] += arac
+
+        sureler_bpr = guzergah_surelerini_hesapla(guzergah_df, delta_araclar)
+
+        # Sadece mevcut çözümden daha iyi bir sonuç kabul et
+        yeni_iter = tek_optimizasyon(sureler_bpr, str(iterasyon))
+
+        mevcut_maliyet = sum(
+            sureler_bpr.get((str(g["sirket"]), str(g["baslangic_ilce"]), yeni.get(str(g["sirket"]), "08:00")), 45.0)
+            * int(g["calisan_sayisi"])
+            for _, g in guzergah_df.iterrows()
+        )
+        yeni_maliyet = sum(
+            sureler_bpr.get((str(g["sirket"]), str(g["baslangic_ilce"]), yeni_iter.get(str(g["sirket"]), "08:00")), 45.0)
+            * int(g["calisan_sayisi"])
+            for _, g in guzergah_df.iterrows()
+        )
+
+        if yeni_maliyet < mevcut_maliyet:
+            yeni = yeni_iter
+        
+        if yeni_iter == yeni:
+            break
+
     return yeni
 
 # ── VARSAYILAN VERİ ──
