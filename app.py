@@ -9,6 +9,7 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 import re
 import datetime
+import trafik_model as tm   # sıkışıklık-duyarlı denge motoru
 
 st.set_page_config(page_title="İstanbul Trafik Optimizasyonu", layout="wide")
 st.title("İstanbul Trafik Optimizasyonu")
@@ -195,105 +196,24 @@ def guzergah_surelerini_hesapla(guzergah_df):
             sureler[(sirket, ilce, saat)] = round((mesafe_km / hiz) * 60 if hiz > 0 else 45.0, 2)
     return sureler
 
-def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, max_saatlik_oran, mod):
-    mesai_dict = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_df.iterrows()}
-    sabit_list = [str(r["isim"]) for _, r in sirketler_df.iterrows() if r["sabit"]]
-    isimler    = [str(r["isim"]) for _, r in sirketler_df.iterrows()]
+def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, max_saatlik_oran, mod,
+                          doluluk=1.5, kapasite=60.0, alfa=0.20):
+    """
+    Sıkışıklık-duyarlı iteratif DENGE optimizasyonu.
 
-    # Tüm güzergah sürelerini önceden hesapla
-    sureler = guzergah_surelerini_hesapla(guzergah_df)
-
-    # Mevcut süreler (ağırlık ve maliyet karşılaştırması için)
-    mevcut_sureler = {}
-    for _, g in guzergah_df.iterrows():
-        s = str(g["sirket"])
-        i = str(g["baslangic_ilce"])
-        m = mesai_dict.get(s, "08:00")
-        mevcut_sureler[(s, i)] = sureler.get((s, i, m), 45.0)
-    ort_sure = sum(mevcut_sureler.values()) / len(mevcut_sureler) if mevcut_sureler else 45.0
-
-    def temiz(s):
-        return "".join(c if c.isalnum() else "_" for c in str(s))
-
-    prob = LpProblem("Optimizasyon", LpMinimize)
-    x = {(s, saat): LpVariable(f"x_{temiz(s)}_{saat.replace(':','')}", cat="Binary")
-         for s in isimler for saat in mesai_secenekleri}
-
-    # Kısıt 1: Her şirket 1 saatte başlasın
-    for s in isimler:
-        prob += lpSum(x[s, saat] for saat in mesai_secenekleri) == 1
-
-    # Kısıt 2: Max sapma
-    for s in isimler:
-        mevcut = mesai_indeks.get(mesai_dict.get(s, "08:00"), 2)
-        for saat in mesai_secenekleri:
-            if abs(mesai_indeks[saat] - mevcut) > max_sapma:
-                prob += x[s, saat] == 0
-
-    # Kısıt 3: Sabit şirketler
-    for s in sabit_list:
-        m = mesai_dict.get(s, "08:00")
-        if m in mesai_secenekleri:
-            prob += x[s, m] == 1
-
-    # Kısıt 4: Saatlik maksimum kapasite sınırı
-    toplam_cal = int(guzergah_df["calisan_sayisi"].sum())
-    for saat in mesai_secenekleri:
-        prob += lpSum(
-            x[s, saat] * int(guzergah_df[guzergah_df["sirket"]==s]["calisan_sayisi"].sum())
-            for s in isimler
-        ) <= toplam_cal * max_saatlik_oran
-
-    # ── HEDEF FONKSİYON (moda göre) ──
-    hedef = []
-
-    if mod == "uzun_sure":
-        # Uzun yollara daha fazla ağırlık ver
-        for _, g in guzergah_df.iterrows():
-            s    = str(g["sirket"])
-            ilce = str(g["baslangic_ilce"])
-            kisi = int(g["calisan_sayisi"])
-            if s in isimler:
-                mevcut_sure = mevcut_sureler.get((s, ilce), 45.0)
-                agirlik = max(0.5, mevcut_sure / ort_sure)
-                for saat in mesai_secenekleri:
-                    sure = sureler.get((s, ilce, saat), 45.0)
-                    hedef.append(x[s, saat] * kisi * sure * agirlik)
-
-    elif mod == "peak_yuk":
-        # Tepe saatteki yükü azalt (süre ikincil hedef)
-        tepe_saatler = ["08:00","08:30","09:00"]
-        for _, g in guzergah_df.iterrows():
-            s    = str(g["sirket"])
-            ilce = str(g["baslangic_ilce"])
-            kisi = int(g["calisan_sayisi"])
-            if s in isimler:
-                for saat in mesai_secenekleri:
-                    sure = sureler.get((s, ilce, saat), 45.0)
-                    tepe_ceza = 1000 if saat in tepe_saatler else 0
-                    hedef.append(x[s, saat] * kisi * (tepe_ceza + sure))
-
-    else:  # ortalama_sure
-        # Tüm güzergahları eşit ağırlıkla optimize et
-        for _, g in guzergah_df.iterrows():
-            s    = str(g["sirket"])
-            ilce = str(g["baslangic_ilce"])
-            kisi = int(g["calisan_sayisi"])
-            if s in isimler:
-                for saat in mesai_secenekleri:
-                    sure = sureler.get((s, ilce, saat), 45.0)
-                    hedef.append(x[s, saat] * kisi * sure)
-
-    prob += lpSum(hedef)
-    status = prob.solve(PULP_CBC_CMD(msg=0))
-
-    yeni = {}
-    if status == LpStatusOptimal:
-        for s in isimler:
-            for saat in mesai_secenekleri:
-                if value(x[s, saat]) == 1:
-                    yeni[s] = saat
-    return yeni, status
+    Eski sürümde hızlar sabit varsayılıyordu; yığılma yapılan saatte hız
+    düşmüyor, dolayısıyla optimizer yeni yığılmalar yaratıyor ve süreleri
+    olduğundan iyi raporluyordu. Bu sürümde:
+      - İBB saatlik hızı = arka plan hızı (v0)
+      - çalışanlarımız = ek yük; yük arttıkça hız düşer (volume-delay)
+      - atama ile hız birbirini etkilediği için MSA ile iteratif denge çözülür.
+    Dönüş: tam rapor sözlüğü (önce/sonra İKİSİ DE sıkışıklık dahil).
+    """
+    return tm.calistir_denge_optimizasyon(
+        sirketler_df, guzergah_df, mesai_secenekleri,
+        max_sapma, max_saatlik_oran, mod,
+        alfa=alfa, beta=4.0, kapasite=kapasite, doluluk=doluluk, max_iter=15,
+    )
 
 # ── VARSAYILAN VERİ ──
 VARSAYILAN_SIRKETLER = pd.DataFrame([
@@ -431,6 +351,16 @@ opt_mod = st.sidebar.radio(
     }[x]
 )
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("Sıkışıklık Modeli")
+st.sidebar.caption("İBB saatlik hızı arka plan kabul edilir; çalışanlarımız ek yük oluşturur ve yığılınca o saatin hızı düşer.")
+doluluk = st.sidebar.slider("Araç başına kişi (doluluk)", 1.0, 3.0, 1.5, 0.1,
+    help="Servis/araç doluluğu. Yüksek değer = aynı çalışan sayısı için daha az araç = daha az sıkışıklık.")
+kapasite = st.sidebar.slider("Hücre kapasitesi (eklenen araç eşiği)", 30, 200, 60, 10,
+    help="Bir ~2km hücrede bu kadar ek araçtan sonra hız belirgin düşmeye başlar. Düşük değer = sıkışıklık daha erken devreye girer.")
+alfa = st.sidebar.slider("Sıkışıklık duyarlılığı (α)", 0.05, 0.50, 0.20, 0.05,
+    help="BPR katsayısı. Yüksek değer = yığılmanın hıza etkisi daha sert (β=4 sabit).")
+
 sirketler = st.session_state["sirketler"]
 guzergahlar = st.session_state["guzergahlar"]
 sirket_renk = {str(r["isim"]): RENKLER[i % len(RENKLER)]
@@ -451,17 +381,20 @@ with col2:
     st.dataframe(ozet, use_container_width=True, hide_index=True)
 
     if st.button("Optimizasyonu Çalıştır", use_container_width=True, type="primary"):
-        with st.spinner("Hesaplanıyor..."):
-            yeni_mesai, status = optimizasyon_calistir(sirketler, guzergahlar, max_sapma, max_saatlik_oran, opt_mod)
-            if status == LpStatusOptimal:
-                st.session_state["yeni_mesai"]  = yeni_mesai
+        with st.spinner("Sıkışıklık dengesi hesaplanıyor (iteratif)..."):
+            sonuc = optimizasyon_calistir(sirketler, guzergahlar, max_sapma,
+                                          max_saatlik_oran, opt_mod,
+                                          doluluk, kapasite, alfa)
+            if sonuc["status"] == "Optimal":
+                st.session_state["opt_sonuc"]   = sonuc
+                st.session_state["yeni_mesai"]  = sonuc["yeni_mesai"]
                 st.session_state["sirketler"]   = sirketler
                 st.session_state["guzergahlar"] = guzergahlar
                 st.session_state["opt_status"]  = "Optimal"
             else:
-                st.session_state["opt_status"]  = LpStatus[status]
-                if "yeni_mesai" in st.session_state:
-                    del st.session_state["yeni_mesai"]
+                st.session_state["opt_status"]  = sonuc["status"]
+                st.session_state.pop("yeni_mesai", None)
+                st.session_state.pop("opt_sonuc", None)
 
 with col1:
     st.subheader("Harita")
@@ -472,47 +405,50 @@ with col1:
         st.error(f"Optimizasyon çözülemedi (Durum: {opt_status})! Lütfen kısıtlamaları (Max sapma veya Saatlik maks. çalışan kapasitesi) esnetip tekrar deneyin.")
         
     yeni_mesai = st.session_state.get("yeni_mesai", {})
+    opt_sonuc  = st.session_state.get("opt_sonuc", None)
     m = folium.Map(location=[41.01, 28.96], zoom_start=11, tiles="CartoDB positron")
 
-    for _, g in guzergahlar.iterrows():
+    for gidx, g in guzergahlar.iterrows():
         sirket_adi = str(g["sirket"])
         if sirket_adi not in sirketler["isim"].values:
             continue
         s_row = sirketler[sirketler["isim"] == sirket_adi].iloc[0]
-        
-        # OSRM çağrısı yerine DataFrame'den oku!
+
         koordinatlar = g["route_coords"]
-        sure_sn = float(g["base_duration"])
-        
-        mesafe_km = (sure_sn / 3600) * 80
-        ort_lat   = (float(g["baslangic_lat"]) + float(s_row["lat"])) / 2
-        ort_lon   = (float(g["baslangic_lon"]) + float(s_row["lon"])) / 2
+        # mesafe: rota poligonundan (haversine), 80km/h varsayımı yerine gerçek
+        if koordinatlar and len(koordinatlar) > 1:
+            mesafe_km = round(sum(
+                tm.haversine_km(koordinatlar[i][0], koordinatlar[i][1],
+                                koordinatlar[i+1][0], koordinatlar[i+1][1])
+                for i in range(len(koordinatlar) - 1)), 1)
+        else:
+            mesafe_km = 0.0
+
         eski_saat = str(s_row["mevcut_mesai"])
         yeni_saat = yeni_mesai.get(sirket_adi, eski_saat)
 
-        if yeni_mesai:
-            hiz_eski  = bolge_hizi_bul(ort_lat, ort_lon, eski_saat)
-            hiz_yeni  = bolge_hizi_bul(ort_lat, ort_lon, yeni_saat)
-            sure_eski = round((mesafe_km / hiz_eski) * 60, 1) if hiz_eski > 0 else 0
-            sure_yeni = round((mesafe_km / hiz_yeni) * 60, 1) if hiz_yeni > 0 else 0
+        if opt_sonuc:
+            # sıkışıklık-dahil önce/sonra süreler (denge motorundan)
+            sure_eski = opt_sonuc["rota_sure_eski"].get(gidx, 0)
+            sure_yeni = opt_sonuc["rota_sure_yeni"].get(gidx, 0)
             fark      = round(sure_eski - sure_yeni, 1)
-            fark_str  = f"{fark} dk kazanıldı" if fark > 0 else ("— Aynı" if fark == 0 else f"{abs(fark)} dk arttı")
+            fark_str  = (f"{fark} dk kazanıldı" if fark > 0
+                         else ("— Aynı" if fark == 0 else f"{abs(fark)} dk arttı"))
             tooltip_text = (
                 f"<b>{sirket_adi}</b><br>"
                 f"{str(g['baslangic_ilce'])} → {sirket_adi}<br>"
-                f"📏 Mesafe: {round(mesafe_km,1)} km<br>"
+                f"📏 Mesafe: {mesafe_km} km<br>"
                 f"⏱ Önce ({eski_saat}): {sure_eski} dk<br>"
                 f"⏱ Sonra ({yeni_saat}): {sure_yeni} dk<br>"
-                f"{fark_str}"
+                f"{fark_str}<br><i>(sıkışıklık dahil)</i>"
             )
         else:
-            hiz  = bolge_hizi_bul(ort_lat, ort_lon, eski_saat)
-            sure = round((mesafe_km / hiz) * 60, 1) if hiz > 0 else 0
             tooltip_text = (
                 f"<b>{sirket_adi}</b><br>"
                 f"{str(g['baslangic_ilce'])} → {sirket_adi}<br>"
-                f"📏 Mesafe: {round(mesafe_km,1)} km<br>"
-                f"⏱ Mevcut ({eski_saat}): {sure} dk"
+                f"📏 Mesafe: {mesafe_km} km<br>"
+                f"⏱ Mevcut mesai: {eski_saat}<br>"
+                f"<i>Süre için optimizasyonu çalıştırın</i>"
             )
 
         folium.PolyLine(
@@ -562,6 +498,7 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     st.subheader(f"Optimizasyon Sonuçları — {mod_label.get(opt_mod,'')}")
 
     yeni_mesai  = st.session_state["yeni_mesai"]
+    opt_sonuc   = st.session_state.get("opt_sonuc", {})
     sirketler_s = df_temizle_sirket(st.session_state["sirketler"])
     guzergah_s  = st.session_state["guzergahlar"]
     mesai_dict  = {str(r["isim"]): str(r["mevcut_mesai"]) for _, r in sirketler_s.iterrows()}
@@ -571,9 +508,12 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     azalma         = (mevcut_skor - yeni_skor) / mevcut_skor * 100 if mevcut_skor > 0 else 0
     kaydirilan     = sum(1 for s in sirketler_s["isim"] if mesai_dict.get(str(s)) != yeni_mesai.get(str(s)))
 
-    ort_sure_eski, detay_eski = sure_hesapla(guzergah_s, mesai_dict)
-    ort_sure_yeni, detay_yeni = sure_hesapla(guzergah_s, yeni_mesai)
-    sure_fark = ort_sure_eski - ort_sure_yeni
+    # Süreler: ÖNCE ve SONRA — ikisi de sıkışıklık dahil (denge motorundan)
+    ort_sure_eski = opt_sonuc.get("ort_eski", 0.0)
+    ort_sure_yeni = opt_sonuc.get("ort_yeni", 0.0)
+    detay_eski    = opt_sonuc.get("detay_eski", pd.DataFrame())
+    detay_yeni    = opt_sonuc.get("detay_yeni", pd.DataFrame())
+    sure_fark     = ort_sure_eski - ort_sure_yeni
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Eski Çakışma",      f"{mevcut_skor:,}")
@@ -582,6 +522,14 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     m4.metric("Kaydırılan Şirket", f"{kaydirilan}/{len(sirketler_s)}")
     m5.metric("Eski Ort. Süre",    f"{ort_sure_eski} dk")
     m6.metric("Yeni Ort. Süre",    f"{ort_sure_yeni} dk", f"{-sure_fark:.1f} dk")
+
+    gecmis = opt_sonuc.get("gecmis", [])
+    st.caption(
+        "ℹ️ Her iki süre de **sıkışıklık dahil** hesaplanır: çalışan yükü arttıkça "
+        "o saat-bölgedeki hız düşer. Atama, yeni yığılma yaratmamak için "
+        f"**{len(gecmis)} iterasyonlu denge** ile bulunmuştur "
+        "(böylece kazanç, eski sürümdeki gibi 'sabit hız' varsayımıyla şişirilmez)."
+    )
 
     sonuc_rows = []
     for _, s in sirketler_s.iterrows():
@@ -641,3 +589,13 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     ax2.spines[["top","right"]].set_visible(False)
 
     st.pyplot(fig)
+
+    if gecmis:
+        with st.expander("Denge Yakınsaması (iterasyon başına ortalama süre)"):
+            st.caption("İteratif denge (MSA): atama sabitlenene kadar yükler güncellenir. "
+                       "Düz bir çizgiye oturması yakınsamayı gösterir.")
+            gdf = pd.DataFrame(gecmis).set_index("iter")
+            st.line_chart(gdf[["ort_sure"]])
+            st.dataframe(gdf.reset_index().rename(columns={
+                "iter": "İterasyon", "ort_sure": "Ort. Süre (dk)", "degisen": "Değişen Atama"
+            }), use_container_width=True, hide_index=True)
