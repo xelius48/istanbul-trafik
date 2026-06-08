@@ -197,22 +197,20 @@ def guzergah_surelerini_hesapla(guzergah_df):
     return sureler
 
 def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, max_saatlik_oran, mod,
-                          doluluk=1.5, kapasite=60.0, alfa=0.20):
+                          doluluk=1.5, tolerans=1.5, alfa=0.50, carpan_max=2.5):
     """
     Sıkışıklık-duyarlı iteratif DENGE optimizasyonu.
 
-    Eski sürümde hızlar sabit varsayılıyordu; yığılma yapılan saatte hız
-    düşmüyor, dolayısıyla optimizer yeni yığılmalar yaratıyor ve süreleri
-    olduğundan iyi raporluyordu. Bu sürümde:
-      - İBB saatlik hızı = arka plan hızı (v0)
-      - çalışanlarımız = ek yük; yük arttıkça hız düşer (volume-delay)
-      - atama ile hız birbirini etkilediği için MSA ile iteratif denge çözülür.
+    Hızlar sabit değildir: çalışan yükü arttıkça o saat-bölgenin hızı düşer
+    (volume-delay). Kapasite veriden otomatik kalibre edilir ve yavaşlama
+    carpan_max ile sınırlıdır; bu yüzden süreler gerçekçi kalır.
     Dönüş: tam rapor sözlüğü (önce/sonra İKİSİ DE sıkışıklık dahil).
     """
     return tm.calistir_denge_optimizasyon(
         sirketler_df, guzergah_df, mesai_secenekleri,
         max_sapma, max_saatlik_oran, mod,
-        alfa=alfa, beta=4.0, kapasite=kapasite, doluluk=doluluk, max_iter=15,
+        alfa=alfa, beta=2.0, tolerans=tolerans, carpan_max=carpan_max,
+        doluluk=doluluk, max_iter=15,
     )
 
 # ── VARSAYILAN VERİ ──
@@ -353,13 +351,15 @@ opt_mod = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Sıkışıklık Modeli")
-st.sidebar.caption("İBB saatlik hızı arka plan kabul edilir; çalışanlarımız ek yük oluşturur ve yığılınca o saatin hızı düşer.")
+st.sidebar.caption("İBB saatlik hızı arka plan kabul edilir; çalışanlarımız ek yük oluşturur ve yığılınca o saatin hızı düşer. Kapasite veriden otomatik kalibre edilir, yavaşlamanın bir üst sınırı vardır.")
 doluluk = st.sidebar.slider("Araç başına kişi (doluluk)", 1.0, 3.0, 1.5, 0.1,
-    help="Servis/araç doluluğu. Yüksek değer = aynı çalışan sayısı için daha az araç = daha az sıkışıklık.")
-kapasite = st.sidebar.slider("Hücre kapasitesi (eklenen araç eşiği)", 30, 200, 60, 10,
-    help="Bir ~2km hücrede bu kadar ek araçtan sonra hız belirgin düşmeye başlar. Düşük değer = sıkışıklık daha erken devreye girer.")
-alfa = st.sidebar.slider("Sıkışıklık duyarlılığı (α)", 0.05, 0.50, 0.20, 0.05,
-    help="BPR katsayısı. Yüksek değer = yığılmanın hıza etkisi daha sert (β=4 sabit).")
+    help="Servis/araç doluluğu. Yüksek değer = aynı çalışan için daha az araç = daha az sıkışıklık.")
+tolerans = st.sidebar.slider("Yığılma toleransı", 0.5, 3.0, 1.5, 0.1,
+    help="Kapasite = tolerans × (mevcut yüklerin referansı). Düşük değer = yığılma daha erken cezalandırılır.")
+alfa = st.sidebar.slider("Sıkışıklık duyarlılığı (α)", 0.1, 1.0, 0.5, 0.05,
+    help="Volume-delay katsayısı (β=2 sabit). Yüksek = yığılmanın hıza etkisi daha belirgin.")
+carpan_max = st.sidebar.slider("Maks. yavaşlama (×)", 1.5, 4.0, 2.5, 0.1,
+    help="Bir yolun en fazla kaç kat yavaşlayabileceği. Sürelerin gerçek dışı şişmesini engeller.")
 
 sirketler = st.session_state["sirketler"]
 guzergahlar = st.session_state["guzergahlar"]
@@ -384,7 +384,7 @@ with col2:
         with st.spinner("Sıkışıklık dengesi hesaplanıyor (iteratif)..."):
             sonuc = optimizasyon_calistir(sirketler, guzergahlar, max_sapma,
                                           max_saatlik_oran, opt_mod,
-                                          doluluk, kapasite, alfa)
+                                          doluluk, tolerans, alfa, carpan_max)
             if sonuc["status"] == "Optimal":
                 st.session_state["opt_sonuc"]   = sonuc
                 st.session_state["yeni_mesai"]  = sonuc["yeni_mesai"]
