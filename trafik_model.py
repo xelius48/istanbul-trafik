@@ -47,8 +47,9 @@ def haversine_km(lat1, lon1, lat2, lon2):
 class HizModeli:
     """İBB hız tablosunu sarmalayan; hücre eşleme + sıkışıklık hesabı yapan sınıf."""
 
-    def __init__(self, ibb_hiz_tablosu, alfa=0.15, beta=4.0,
-                 kapasite=150.0, doluluk=1.5, varsayilan_hiz=30.0):
+    def __init__(self, ibb_hiz_tablosu, alfa=0.50, beta=2.0,
+                 kapasite=None, doluluk=1.5, carpan_max=2.5,
+                 tolerans=1.5, varsayilan_hiz=30.0):
         # tablo: {(lat,lon): {saat:int -> hız:float}}
         self.tablo = {}
         for k, v in ibb_hiz_tablosu.items():
@@ -67,12 +68,31 @@ class HizModeli:
 
         # Volume-delay parametreleri
         self.alfa = float(alfa)            # BPR alfa (sıkışıklık şiddeti)
-        self.beta = float(beta)            # BPR beta (üs)
-        self.kapasite = float(kapasite)    # hücre başına eklenebilir araç/saat eşiği
+        self.beta = float(beta)            # BPR beta (üs) — yumuşak: 2
         self.doluluk = float(doluluk)      # araç başına kişi (carpool/servis)
+        self.carpan_max = float(carpan_max)  # süre çarpanı ÜST SINIRI (patlamayı önler)
+        self.tolerans = float(tolerans)    # kapasite = tolerans * referans yük
         self.varsayilan_hiz = float(varsayilan_hiz)
+        # kapasite: verilmezse veriden otomatik kalibre edilir (kalibre_et)
+        self.kapasite = float(kapasite) if kapasite else None
 
         self._yakin_cache = {}             # (lat,lon) -> en yakın hücre anahtarı
+
+    def kalibre_et(self, yuk_dict):
+        """
+        Kapasiteyi VERİYE göre otomatik belirle: mevcut atamadaki hücre-saat
+        yüklerinin (sıfır olmayanların) 70. yüzdeliğini 'referans' kabul et,
+        C = tolerans * referans. Böylece N/C ~ O(1) kalır, büyük veride patlamaz.
+        """
+        yukler = sorted(v for v in yuk_dict.values() if v > 0)
+        if not yukler:
+            self.kapasite = 1.0
+            return self.kapasite
+        # 70. yüzdelik
+        idx = int(0.70 * (len(yukler) - 1))
+        referans = yukler[idx]
+        self.kapasite = max(1.0, self.tolerans * referans)
+        return self.kapasite
 
     # -- hücre eşleme --
     def _snap(self, lat, lon):
@@ -102,10 +122,16 @@ class HizModeli:
 
     # -- volume-delay --
     def gecikme_carpani(self, yuk):
-        """Eklenen araç yükü -> süre çarpanı (1 + alfa*(N/C)^beta)."""
-        if yuk <= 0:
+        """
+        Eklenen araç yükü -> süre çarpanı.
+        carpan = 1 + alfa*(N/C)^beta, fakat carpan_max ile ÜSTTEN SINIRLI.
+        Üst sınır, büyük yüklerde sürenin sonsuza gitmesini engeller
+        (gerçekte de bir yol tamamen kilitlense bile süre sonsuz olmaz).
+        """
+        if yuk <= 0 or not self.kapasite:
             return 1.0
-        return 1.0 + self.alfa * (yuk / self.kapasite) ** self.beta
+        carpan = 1.0 + self.alfa * (yuk / self.kapasite) ** self.beta
+        return min(self.carpan_max, carpan)
 
     def sikismis_hiz(self, hucre, saat_int, yuk):
         return self.v0(hucre, saat_int) / self.gecikme_carpani(yuk)
@@ -302,12 +328,16 @@ def _katsayi_yumusak(rp, mesai_dict, yumusak_yuk, saat_secenekleri):
 
 def calistir_denge_optimizasyon(sirketler_df, guzergah_df, mesai_secenekleri,
                                  max_sapma, max_saatlik_oran, mod,
-                                 alfa=0.20, beta=4.0, kapasite=60.0, doluluk=1.5,
-                                 max_iter=15, log=None):
+                                 alfa=0.50, beta=2.0, tolerans=1.5, carpan_max=2.5,
+                                 doluluk=1.5, max_iter=15, log=None):
     """
     app.py'nin çağırdığı tek fonksiyon. Sıkışıklık-duyarlı denge
     optimizasyonunu çalıştırır ve TÜM raporu (önce/sonra, sıkışıklık dahil)
     döndürür.
+
+    Kapasite VERİDEN otomatik kalibre edilir (mevcut atamadaki yüklerin
+    referansına göre) ve önce/sonra için SABİT tutulur; yavaşlama carpan_max
+    ile sınırlıdır. Böylece süreler gerçekçi kalır (binlerce dk olmaz).
     """
     from pulp import (LpProblem, LpMinimize, LpVariable, lpSum, value,
                       PULP_CBC_CMD, LpStatus)
@@ -327,12 +357,19 @@ def calistir_denge_optimizasyon(sirketler_df, guzergah_df, mesai_secenekleri,
     except Exception:
         IBB_HIZ_TABLOSU = {}
 
-    model = HizModeli(IBB_HIZ_TABLOSU, alfa=alfa, beta=beta,
-                      kapasite=kapasite, doluluk=doluluk)
+    model = HizModeli(IBB_HIZ_TABLOSU, alfa=alfa, beta=beta, kapasite=None,
+                      doluluk=doluluk, carpan_max=carpan_max, tolerans=tolerans)
     rp = RotaParcalari(guzergah_df, model)
 
-    # uzun_sure modu için mevcut (sıkışıklık dahil) süre ağırlıkları
+    # KAPASİTE KALİBRASYONU: mevcut (önce) atamadaki yüklerden bir kez belirle,
+    # önce/sonra ve tüm iterasyonlar için SABİT tut.
     mevcut_yuk = rp.yukleri_hesapla(mesai_dict)
+    kalibre_C = model.kalibre_et(mevcut_yuk)
+    if log:
+        log(f"  kalibre kapasite C = {kalibre_C:.1f} araç/hücre-saat "
+            f"(tolerans={tolerans}, α={alfa}, β={beta}, maks yavaşlama={carpan_max}x)")
+
+    # uzun_sure modu için mevcut (sıkışıklık dahil) süre ağırlıkları
     mevcut_sure_route = {}
     for r in rp.rotalar:
         s = int(mesai_dict.get(r["sirket"], "08:00").split(":")[0])
