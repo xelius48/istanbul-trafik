@@ -197,20 +197,23 @@ def guzergah_surelerini_hesapla(guzergah_df):
     return sureler
 
 def optimizasyon_calistir(sirketler_df, guzergah_df, max_sapma, max_saatlik_oran, mod,
-                          doluluk=1.5, tolerans=1.5, alfa=0.50, carpan_max=2.5):
+                          doluluk=1.5, tolerans=1.5, alfa=0.50, carpan_max=2.5,
+                          senaryo="Normal"):
     """
-    Sıkışıklık-duyarlı iteratif DENGE optimizasyonu.
+    Sıkışıklık-duyarlı iteratif DENGE optimizasyonu (senaryo destekli).
 
     Hızlar sabit değildir: çalışan yükü arttıkça o saat-bölgenin hızı düşer
-    (volume-delay). Kapasite veriden otomatik kalibre edilir ve yavaşlama
-    carpan_max ile sınırlıdır; bu yüzden süreler gerçekçi kalır.
+    (volume-delay). Kapasite veriden otomatik kalibre edilir, yavaşlama
+    carpan_max ile sınırlıdır. 'senaryo' Normal dışında bir geçiş kapatırsa
+    (1. Köprü / Avrasya Tüneli), o geçişi kullanan rotalar en yakın açık
+    geçişe yönlendirilir (detour + alternatif geçişe yük yığılması).
     Dönüş: tam rapor sözlüğü (önce/sonra İKİSİ DE sıkışıklık dahil).
     """
     return tm.calistir_denge_optimizasyon(
         sirketler_df, guzergah_df, mesai_secenekleri,
         max_sapma, max_saatlik_oran, mod,
         alfa=alfa, beta=2.0, tolerans=tolerans, carpan_max=carpan_max,
-        doluluk=doluluk, max_iter=15,
+        doluluk=doluluk, senaryo=senaryo, max_iter=15,
     )
 
 # ── VARSAYILAN VERİ ──
@@ -361,6 +364,15 @@ alfa = st.sidebar.slider("Sıkışıklık duyarlılığı (α)", 0.1, 1.0, 0.5, 
 carpan_max = st.sidebar.slider("Maks. yavaşlama (×)", 1.5, 4.0, 2.5, 0.1,
     help="Bir yolun en fazla kaç kat yavaşlayabileceği. Sürelerin gerçek dışı şişmesini engeller.")
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("Senaryolar")
+st.sidebar.caption("Bir geçiş kapanınca onu kullanan rotalar en yakın açık geçişe yönlendirilir (yol uzar + alternatif geçiş tıkanır). Algoritmanın bu duruma tepkisini gör.")
+senaryo = st.sidebar.radio(
+    "Aktif senaryo:",
+    options=list(tm.SENARYOLAR.keys()),
+    help="Normal = bugünkü durum (hiçbir kapanma). Diğerleri ilgili geçişi trafiğe kapatır.",
+)
+
 sirketler = st.session_state["sirketler"]
 guzergahlar = st.session_state["guzergahlar"]
 sirket_renk = {str(r["isim"]): RENKLER[i % len(RENKLER)]
@@ -384,7 +396,8 @@ with col2:
         with st.spinner("Sıkışıklık dengesi hesaplanıyor (iteratif)..."):
             sonuc = optimizasyon_calistir(sirketler, guzergahlar, max_sapma,
                                           max_saatlik_oran, opt_mod,
-                                          doluluk, tolerans, alfa, carpan_max)
+                                          doluluk, tolerans, alfa, carpan_max,
+                                          senaryo)
             if sonuc["status"] == "Optimal":
                 st.session_state["opt_sonuc"]   = sonuc
                 st.session_state["yeni_mesai"]  = sonuc["yeni_mesai"]
@@ -395,6 +408,22 @@ with col2:
                 st.session_state["opt_status"]  = sonuc["status"]
                 st.session_state.pop("yeni_mesai", None)
                 st.session_state.pop("opt_sonuc", None)
+
+    if st.button("🚧 Senaryoları Karşılaştır", use_container_width=True,
+                 help="Normal / 1. Köprü Kapalı / Avrasya Tüneli Kapalı senaryolarını aynı ayarlarla çalıştırıp karşılaştırır."):
+        with st.spinner("Üç senaryo çalıştırılıyor..."):
+            kars = []
+            for sen in tm.SENARYOLAR.keys():
+                s = optimizasyon_calistir(sirketler, guzergahlar, max_sapma,
+                                          max_saatlik_oran, opt_mod,
+                                          doluluk, tolerans, alfa, carpan_max, sen)
+                kars.append({
+                    "Senaryo": sen,
+                    "Etkilenen Rota": s["etkilenen_rota"],
+                    "Optimizasyon Öncesi (dk)": s["ort_eski"],
+                    "Optimizasyon Sonrası (dk)": s["ort_yeni"],
+                })
+            st.session_state["senaryo_kars"] = pd.DataFrame(kars)
 
 with col1:
     st.subheader("Harita")
@@ -495,7 +524,16 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
     mod_label = {"uzun_sure":"En Uzun Süreyi Kısalt",
                  "peak_yuk":"Tepe Saatteki Yükü Azalt",
                  "ortalama_sure":"Ortalama Süreyi Kısalt"}
-    st.subheader(f"Optimizasyon Sonuçları — {mod_label.get(opt_mod,'')}")
+    aktif_senaryo = st.session_state.get("opt_sonuc", {}).get("senaryo", "Normal")
+    baslik = f"Optimizasyon Sonuçları — {mod_label.get(opt_mod,'')}"
+    if aktif_senaryo != "Normal":
+        baslik += f"  |  🚧 {aktif_senaryo}"
+    st.subheader(baslik)
+    etk = st.session_state.get("opt_sonuc", {}).get("etkilenen_rota", 0)
+    if aktif_senaryo != "Normal":
+        st.warning(f"**{aktif_senaryo}** senaryosu aktif: bu geçişi kullanan **{etk} rota** "
+                   f"en yakın açık geçişe yönlendirildi (yol uzadı + alternatif geçiş tıkandı). "
+                   f"Aşağıdaki tüm değerler bu kapanmayı içerir.")
 
     yeni_mesai  = st.session_state["yeni_mesai"]
     opt_sonuc   = st.session_state.get("opt_sonuc", {})
@@ -599,3 +637,41 @@ if "yeni_mesai" in st.session_state and st.session_state["yeni_mesai"]:
             st.dataframe(gdf.reset_index().rename(columns={
                 "iter": "İterasyon", "ort_sure": "Ort. Süre (dk)", "degisen": "Değişen Atama"
             }), use_container_width=True, hide_index=True)
+
+# ── SENARYO KARŞILAŞTIRMASI ──
+if "senaryo_kars" in st.session_state:
+    st.markdown("---")
+    st.subheader("🚧 Senaryo Karşılaştırması — Geçiş Kapanmaları")
+    st.caption("Aynı ayarlarla üç senaryo: bir köprü/tünel kapanınca o geçişi kullanan rotalar "
+               "en yakın açık geçişe yönlenir; yol uzar ve alternatif geçiş tıkanır. "
+               "Tablo, sistemin (optimizasyonun) bu kırılganlığa nasıl tepki verdiğini gösterir.")
+    kdf = st.session_state["senaryo_kars"].copy()
+    normal_sonra = kdf.loc[kdf["Senaryo"] == "Normal", "Optimizasyon Sonrası (dk)"].iloc[0]
+    kdf["Normal'e Göre Fark"] = (kdf["Optimizasyon Sonrası (dk)"] - normal_sonra).round(1)
+
+    st.dataframe(kdf, use_container_width=True, hide_index=True)
+
+    figk, axk = plt.subplots(figsize=(10, 4))
+    xk = np.arange(len(kdf))
+    axk.bar(xk - 0.2, kdf["Optimizasyon Öncesi (dk)"], 0.38, label="Optimizasyon Öncesi", color="#E63946", alpha=0.85)
+    axk.bar(xk + 0.2, kdf["Optimizasyon Sonrası (dk)"], 0.38, label="Optimizasyon Sonrası", color="#4CAF50", alpha=0.85)
+    for i, (e, y) in enumerate(zip(kdf["Optimizasyon Öncesi (dk)"], kdf["Optimizasyon Sonrası (dk)"])):
+        axk.text(i - 0.2, e + 0.4, f"{e}", ha="center", fontsize=9, fontweight="bold")
+        axk.text(i + 0.2, y + 0.4, f"{y}", ha="center", fontsize=9, fontweight="bold")
+    axk.axhline(normal_sonra, color="#888", ls="--", lw=1, label="Normal (referans)")
+    axk.set_xticks(xk); axk.set_xticklabels(kdf["Senaryo"], rotation=10)
+    axk.set_ylabel("Ortalama İşe Gidiş Süresi (dk)")
+    axk.set_title("Senaryolara Göre Ortalama Süre", fontweight="bold")
+    axk.legend(fontsize=9); axk.grid(alpha=0.3, axis="y")
+    axk.spines[["top","right"]].set_visible(False)
+    st.pyplot(figk)
+
+    en_kotu = kdf.sort_values("Optimizasyon Sonrası (dk)", ascending=False).iloc[0]
+    if en_kotu["Senaryo"] != "Normal":
+        fark_val = float(en_kotu["Normal'e Göre Fark"])
+        etk_val = int(en_kotu["Etkilenen Rota"])
+        sen_ad = en_kotu["Senaryo"]
+        st.info(f"En çok etkilenen senaryo: **{sen_ad}** — ortalama süre Normal'e göre "
+                f"**+{fark_val:.1f} dk**, **{etk_val} rota** yönlendirildi. "
+                f"Optimizasyon kapanmanın etkisini bir miktar azaltsa da tamamen telafi edemez; "
+                f"bu, geçişin sistem için ne kadar kritik olduğunu gösterir.")

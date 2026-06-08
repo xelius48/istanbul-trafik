@@ -77,6 +77,7 @@ class HizModeli:
         self.kapasite = float(kapasite) if kapasite else None
 
         self._yakin_cache = {}             # (lat,lon) -> en yakın hücre anahtarı
+        self._kavsak_cache = None           # geçiş hücre setleri (senaryo için)
 
     def kalibre_et(self, yuk_dict):
         """
@@ -160,23 +161,157 @@ def rota_hucreleri(route_coords, model):
     return parcalar
 
 
-# ── 3. YÜK VE SÜRE HESABI ────────────────────────────────────
+# ── 2b. KAVŞAKLAR (KÖPRÜ / TÜNEL GEÇİŞLERİ) VE KAPANMA ────────
+#
+# Senaryo mantığı: Bir geçiş kapanınca onu kullanan rotalar EN YAKIN AÇIK
+# geçişe yönlendirilir. Bu hem yolu uzatır (detour mesafesi) hem de o
+# alternatif geçişe yük yığar -> mevcut volume-delay motoru o geçişin
+# hızını düşürür -> diğer rotalara da yansır. "Normal" senaryoda hiçbir
+# dönüşüm yapılmaz; sistem bugünküyle birebir aynı çalışır.
+
+KAVSAKLAR = {
+    "1. Köprü":        (41.0451, 29.0344),   # 15 Temmuz Şehitler Köprüsü
+    "FSM (2.) Köprü":  (41.0915, 29.0578),   # Fatih Sultan Mehmet
+    "YSS (3.) Köprü":  (41.2008, 29.1153),   # Yavuz Sultan Selim
+    "Avrasya Tüneli":  (40.9985, 28.9850),   # Avrasya Karayolu Tüneli
+}
+
+# Senaryo adı -> kapanan geçiş(ler)
+SENARYOLAR = {
+    "Normal":                 [],
+    "1. Köprü Kapalı":        ["1. Köprü"],
+    "Avrasya Tüneli Kapalı":  ["Avrasya Tüneli"],
+}
+
+_KAVSAK_YARICAP = 0.035  # ~3.5 km; bu yarıçaptaki hücreler geçişe ait sayılır
+
+
+def _kavsak_hucre_setleri(model):
+    """Her geçiş için ona ait İBB hücrelerinin kümesini üret (cache'li)."""
+    if getattr(model, "_kavsak_cache", None) is not None:
+        return model._kavsak_cache
+    setler = {}
+    for ad, (lat, lon) in KAVSAKLAR.items():
+        hucreler = set()
+        adim = GRID
+        r = _KAVSAK_YARICAP
+        la = lat - r
+        while la <= lat + r:
+            lo = lon - r
+            while lo <= lon + r:
+                if abs(la - lat) + abs(lo - lon) <= r * 1.4:
+                    hucreler.add(model.en_yakin_hucre(la, lo))
+                lo += adim
+            la += adim
+        setler[ad] = hucreler
+    model._kavsak_cache = setler
+    return setler
+
+
+def _kita(lat, lon):
+    """Kaba kıta tespiti: İstanbul Boğazı'nın yaklaşık boylamına göre."""
+    sinir = 29.00 + (lat - 41.0) * 0.25   # boğaz boylamı (kabaca)
+    return "ASYA" if lon > sinir else "AVRUPA"
+
+
+def _rota_kavsagi(coords, o_lat, o_lon, d_lat, d_lon, kavsak_setleri):
+    """
+    Bir rotanın normalde hangi geçişi kullandığını belirle.
+    1) Poligon bir geçişin hücrelerinden geçiyorsa o geçiş.
+    2) Geçmiyor ama rota kıtalararası ise: orta noktaya en yakın geçiş.
+    3) Aynı kıtadaysa: geçiş yok (None).
+    """
+    gecilen = None
+    for i in range(len(coords)):
+        h = (round(round(coords[i][0] / GRID) * GRID, 2),
+             round(round(coords[i][1] / GRID) * GRID, 2))
+        for ad, hset in kavsak_setleri.items():
+            if h in hset:
+                return ad
+    if _kita(o_lat, o_lon) != _kita(d_lat, d_lon):
+        mlat, mlon = (o_lat + d_lat) / 2, (o_lon + d_lon) / 2
+        en_iyi, en_d = None, float("inf")
+        for ad, (la, lo) in KAVSAKLAR.items():
+            d = haversine_km(mlat, mlon, la, lo)
+            if d < en_d:
+                en_d, en_iyi = d, ad
+        return en_iyi
+    return None
+
+
+def _yonlendir(rota_hucre, kullanilan, kapali_list, model, o_lat, o_lon, d_lat, d_lon):
+    """
+    Kapanma uygulanmış hücre sözlüğü döndür.
+    Kullanılan geçiş kapalıysa: en yakın AÇIK geçişe yönlendir
+    (geçiş km'sini oraya taşı + detour mesafesi ekle).
+    Dönüş: (yeni_hucreler, etkilendi_mi)
+    """
+    if kullanilan is None or kullanilan not in kapali_list:
+        return rota_hucre, False
+
+    kavsak_setleri = _kavsak_hucre_setleri(model)
+    acik = [ad for ad in KAVSAKLAR if ad not in kapali_list]
+    if not acik:
+        return rota_hucre, False  # tüm geçişler kapalıysa (gerçekçi değil) dokunma
+
+    x_lat, x_lon = KAVSAKLAR[kullanilan]
+    # en yakın açık geçiş (kapanan geçişe göre)
+    y = min(acik, key=lambda a: haversine_km(x_lat, x_lon, *KAVSAKLAR[a]))
+    y_lat, y_lon = KAVSAKLAR[y]
+    y_hucre = model.en_yakin_hucre(y_lat, y_lon)
+
+    # kapanan geçişin hücrelerini rotadan çıkar, km'sini topla
+    kapali_hucreler = kavsak_setleri[kullanilan]
+    yeni = {}
+    tasinan_km = 0.0
+    for h, km in rota_hucre.items():
+        if h in kapali_hucreler:
+            tasinan_km += km
+        else:
+            yeni[h] = yeni.get(h, 0.0) + km
+
+    # detour: O->Y->D ile O->X->D farkı
+    eski_yol = haversine_km(o_lat, o_lon, x_lat, x_lon) + haversine_km(x_lat, x_lon, d_lat, d_lon)
+    yeni_yol = haversine_km(o_lat, o_lon, y_lat, y_lon) + haversine_km(y_lat, y_lon, d_lat, d_lon)
+    detour = max(0.0, yeni_yol - eski_yol)
+
+    # taşınan + detour km'yi alternatif geçişin hücresine ekle (yük oraya biner)
+    yeni[y_hucre] = yeni.get(y_hucre, 0.0) + tasinan_km + detour
+    return yeni, True
+
+
 
 class RotaParcalari:
     """Her güzergah için: şirket, kişi sayısı, araç sayısı ve hücre parçaları."""
 
-    def __init__(self, guzergah_df, model):
+    def __init__(self, guzergah_df, model, senaryo="Normal"):
         self.model = model
+        self.senaryo = senaryo
         self.rotalar = []  # list of dict
+        self.etkilenen = 0  # senaryodan etkilenen (yönlendirilen) rota sayısı
+
+        kapali = SENARYOLAR.get(senaryo, [])
+        kavsak_setleri = _kavsak_hucre_setleri(model) if kapali else {}
+
         for idx, g in guzergah_df.iterrows():
+            o_lat, o_lon = float(g["baslangic_lat"]), float(g["baslangic_lon"])
+            d_lat = float(g.get("sirket_lat", o_lat))
+            d_lon = float(g.get("sirket_lon", o_lon))
             coords = g.get("route_coords", None)
             if coords is None or (hasattr(coords, "__len__") and len(coords) == 0):
-                # geometri yoksa başlangıç-şirket düz çizgisini örnekle
-                coords = _duz_cizgi(
-                    float(g["baslangic_lat"]), float(g["baslangic_lon"]),
-                    float(g.get("sirket_lat", g["baslangic_lat"])),
-                    float(g.get("sirket_lon", g["baslangic_lon"])),
-                )
+                coords = _duz_cizgi(o_lat, o_lon, d_lat, d_lon)
+            coords = list(coords)
+
+            hucreler = dict(rota_hucreleri(coords, model))
+
+            # senaryo: geçiş kapalıysa rotayı yönlendir
+            if kapali:
+                kullanilan = _rota_kavsagi(coords, o_lat, o_lon, d_lat, d_lon, kavsak_setleri)
+                hucreler, etki = _yonlendir(hucreler, kullanilan, kapali, model,
+                                            o_lat, o_lon, d_lat, d_lon)
+                if etki:
+                    self.etkilenen += 1
+
             kisi = int(g["calisan_sayisi"])
             self.rotalar.append({
                 "idx": idx,
@@ -184,7 +319,7 @@ class RotaParcalari:
                 "ilce": str(g["baslangic_ilce"]),
                 "kisi": kisi,
                 "arac": kisi / model.doluluk,
-                "hucreler": dict(rota_hucreleri(list(coords), model)),
+                "hucreler": hucreler,
             })
 
     def yukleri_hesapla(self, mesai_dict):
@@ -329,7 +464,7 @@ def _katsayi_yumusak(rp, mesai_dict, yumusak_yuk, saat_secenekleri):
 def calistir_denge_optimizasyon(sirketler_df, guzergah_df, mesai_secenekleri,
                                  max_sapma, max_saatlik_oran, mod,
                                  alfa=0.50, beta=2.0, tolerans=1.5, carpan_max=2.5,
-                                 doluluk=1.5, max_iter=15, log=None):
+                                 doluluk=1.5, senaryo="Normal", max_iter=15, log=None):
     """
     app.py'nin çağırdığı tek fonksiyon. Sıkışıklık-duyarlı denge
     optimizasyonunu çalıştırır ve TÜM raporu (önce/sonra, sıkışıklık dahil)
@@ -359,7 +494,7 @@ def calistir_denge_optimizasyon(sirketler_df, guzergah_df, mesai_secenekleri,
 
     model = HizModeli(IBB_HIZ_TABLOSU, alfa=alfa, beta=beta, kapasite=None,
                       doluluk=doluluk, carpan_max=carpan_max, tolerans=tolerans)
-    rp = RotaParcalari(guzergah_df, model)
+    rp = RotaParcalari(guzergah_df, model, senaryo=senaryo)
 
     # KAPASİTE KALİBRASYONU: mevcut (önce) atamadaki yüklerden bir kez belirle,
     # önce/sonra ve tüm iterasyonlar için SABİT tut.
@@ -433,6 +568,13 @@ def calistir_denge_optimizasyon(sirketler_df, guzergah_df, mesai_secenekleri,
     ort_eski, detay_eski = _detayli_rapor(rp, mesai_dict)
     ort_yeni, detay_yeni = _detayli_rapor(rp, yeni_mesai)
 
+    # GÜVENLİK: optimize edilen atama gerçekte statükodan kötüyse, statükoda kal.
+    # (Ağır kapanma senaryolarında mesai kaydırma tek başına telafi edemeyebilir;
+    #  bu durumda "optimizasyon kötüleştirdi" gibi yanıltıcı sonuç verilmez.)
+    if ort_yeni > ort_eski + 0.05:
+        yeni_mesai = dict(mesai_dict)
+        ort_yeni, detay_yeni = ort_eski, detay_eski
+
     # harita için rota bazlı süreler
     yuk_eski = rp.yukleri_hesapla(mesai_dict)
     yuk_yeni = rp.yukleri_hesapla(yeni_mesai)
@@ -448,6 +590,7 @@ def calistir_denge_optimizasyon(sirketler_df, guzergah_df, mesai_secenekleri,
         "ort_eski": ort_eski, "detay_eski": detay_eski,
         "ort_yeni": ort_yeni, "detay_yeni": detay_yeni,
         "rota_sure_eski": rota_sure_eski, "rota_sure_yeni": rota_sure_yeni,
+        "senaryo": senaryo, "etkilenen_rota": rp.etkilenen,
     }
 
 
